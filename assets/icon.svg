@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background gradient: deep indigo → near-black -->
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4a2d8a"/>
+      <stop offset="55%" stop-color="#231246"/>
+      <stop offset="100%" stop-color="#0c0820"/>
+    </linearGradient>
+    <!-- Soft purple glow around the ghost -->
+    <radialGradient id="aura" cx="0.5" cy="0.45" r="0.55">
+      <stop offset="0%" stop-color="#9f7bff" stop-opacity="0.55"/>
+      <stop offset="60%" stop-color="#6e4dff" stop-opacity="0.18"/>
+      <stop offset="100%" stop-color="#6e4dff" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Ghost body: subtle vertical fade from white to lavender-tinted -->
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#dcd5ef"/>
+    </linearGradient>
+    <!-- Goggles lens fill -->
+    <radialGradient id="lens" cx="0.35" cy="0.3" r="0.8">
+      <stop offset="0%" stop-color="#9f7bff"/>
+      <stop offset="55%" stop-color="#3b1f7a"/>
+      <stop offset="100%" stop-color="#0d0524"/>
+    </radialGradient>
+    <!-- Inner shadow on the ghost body for depth -->
+    <radialGradient id="bodyShadow" cx="0.5" cy="0.95" r="0.65">
+      <stop offset="0%" stop-color="#000000" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#1a0a3a" stop-opacity="0.18"/>
+    </radialGradient>
+  </defs>
+
+  <!-- macOS-style squircle background (~22% corner radius) -->
+  <rect x="0" y="0" width="1024" height="1024" rx="228" ry="228" fill="url(#bg)"/>
+  <!-- Aura -->
+  <ellipse cx="512" cy="470" rx="430" ry="380" fill="url(#aura)"/>
+
+  <!-- Ghost (translated to center) -->
+  <g transform="translate(512 540)">
+    <!-- Body silhouette: dome on top, 5 wavy bumps on the bottom -->
+    <path d="
+      M -260 200
+      L -260 0
+      A 260 260 0 0 1 260 0
+      L 260 200
+      Q 208 244 156 200
+      Q 104 244 52 200
+      Q 0 244 -52 200
+      Q -104 244 -156 200
+      Q -208 244 -260 200
+      Z
+    " fill="url(#body)"/>
+    <!-- Inner shadow overlay -->
+    <path d="
+      M -260 200
+      L -260 0
+      A 260 260 0 0 1 260 0
+      L 260 200
+      Q 208 244 156 200
+      Q 104 244 52 200
+      Q 0 244 -52 200
+      Q -104 244 -156 200
+      Q -208 244 -260 200
+      Z
+    " fill="url(#bodyShadow)"/>
+
+    <!-- Aviator goggles -->
+    <g>
+      <!-- Strap (slightly curved across the head) -->
+      <path d="
+        M -252 -50
+        Q 0 -78 252 -50
+        L 252 -22
+        Q 0 -50 -252 -22
+        Z
+      " fill="#1a0f3d"/>
+
+      <!-- Left lens -->
+      <circle cx="-110" cy="-36" r="86" fill="url(#lens)" stroke="#1a0f3d" stroke-width="10"/>
+      <!-- Left highlight -->
+      <ellipse cx="-138" cy="-66" rx="28" ry="18" fill="#ffffff" opacity="0.55"/>
+      <circle cx="-92" cy="-22" r="10" fill="#c5a8ff" opacity="0.7"/>
+
+      <!-- Right lens -->
+      <circle cx="110" cy="-36" r="86" fill="url(#lens)" stroke="#1a0f3d" stroke-width="10"/>
+      <!-- Right highlight -->
+      <ellipse cx="82" cy="-66" rx="28" ry="18" fill="#ffffff" opacity="0.55"/>
+      <circle cx="128" cy="-22" r="10" fill="#c5a8ff" opacity="0.7"/>
+
+      <!-- Bridge between lenses -->
+      <rect x="-30" y="-44" width="60" height="18" rx="6" fill="#1a0f3d"/>
+    </g>
+
+    <!-- Mouth (small "O") -->
+    <ellipse cx="0" cy="100" rx="22" ry="30" fill="#3a2766"/>
+
+    <!-- Cheek blush (subtle) -->
+    <ellipse cx="-200" cy="60" rx="34" ry="14" fill="#ffb4c8" opacity="0.35"/>
+    <ellipse cx="200" cy="60" rx="34" ry="14" fill="#ffb4c8" opacity="0.35"/>
+  </g>
+
+  <!-- Subtle starfield specks for "pilot in the void" mood -->
+  <g fill="#ffffff" opacity="0.7">
+    <circle cx="180" cy="200" r="3"/>
+    <circle cx="860" cy="240" r="2.5"/>
+    <circle cx="240" cy="820" r="2"/>
+    <circle cx="820" cy="780" r="3"/>
+    <circle cx="120" cy="540" r="2"/>
+    <circle cx="900" cy="540" r="2"/>
+  </g>
+</svg>

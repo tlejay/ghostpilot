@@ -1,0 +1,31 @@
+node_modules/
+out/
+release/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+.env.*.local
+.vite-cache/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+Thumbs.db
+
+# TypeScript incremental build info
+*.tsbuildinfo
+
+# Icon staging dir (intermediate; final .icns is committed)
+assets/icon.iconset/
+
+# Lockfiles from package managers we don't use
+package-lock.json
+yarn.lock
+
+# Personal context (local only, never shared)
+.ghost-personal.md

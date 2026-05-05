@@ -1,0 +1,107 @@
+{
+  "name": "ghostpilot",
+  "version": "0.2.0",
+  "private": true,
+  "description": "GhostPilot — a Chrome-like Mac browser with an embedded MCP server, so Claude (or any MCP client) can pilot your everyday browsing.",
+  "homepage": "https://madebytle.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/madebytle/ghostpilot.git"
+  },
+  "keywords": [
+    "electron",
+    "browser",
+    "mcp",
+    "claude",
+    "ai",
+    "ghostpilot",
+    "macos"
+  ],
+  "main": "out/main/index.js",
+  "author": "Tle <jakapong@digitalmedia.co.th> (https://madebytle.com)",
+  "license": "MIT",
+  "scripts": {
+    "dev": "node scripts/patch-electron-dev.mjs && electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "assets:icon": "node scripts/make-icon.mjs",
+    "assets:licenses": "node scripts/gather-licenses.mjs",
+    "assets": "pnpm run assets:icon && pnpm run assets:licenses",
+    "patch-electron": "node scripts/patch-electron-dev.mjs",
+    "pack": "pnpm run assets && electron-vite build && electron-builder --mac --dir",
+    "dist": "pnpm run assets && electron-vite build && electron-builder --mac",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "chrome-launcher": "^1.2.1",
+    "electron-updater": "^6.8.3",
+    "express": "^4.21.2",
+    "lighthouse": "^13.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "sql.js": "^1.14.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.0",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "electron-vite": "^2.3.0",
+    "sharp": "^0.33.5",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron",
+      "esbuild",
+      "sharp"
+    ]
+  },
+  "build": {
+    "appId": "com.madebytle.ghostpilot",
+    "productName": "GhostPilot",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets/notices.json",
+        "to": "notices.json"
+      }
+    ],
+    "asarUnpack": [
+      "**/sql.js/dist/sql-wasm.wasm"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "madebytle",
+        "repo": "ghostpilot"
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "assets/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
