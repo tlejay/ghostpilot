@@ -147,6 +147,13 @@ button {
   gap: 6px;
 }
 
+.icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
 .nav-btn {
   width: 30px;
   height: 30px;
@@ -282,8 +289,10 @@ button {
 }
 
 .tab-pin {
-  font-size: 10px;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
+  color: #8ab4f8;
 }
 
 .tab.pinned {

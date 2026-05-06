@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json"
   },
   "dependencies": {
+    "@heroicons/react": "^2.2.0",
     "@modelcontextprotocol/sdk": "^1.0.4",
     "chrome-launcher": "^1.2.1",
     "electron-updater": "^6.8.3",

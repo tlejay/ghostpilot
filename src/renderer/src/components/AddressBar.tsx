@@ -1,4 +1,14 @@
 import { forwardRef, useEffect, useRef, useState } from 'react';
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  ArrowPathIcon,
+  XMarkIcon,
+  FilmIcon,
+  BookmarkIcon as BookmarkOutline,
+  Bars3Icon,
+} from '@heroicons/react/24/outline';
+import { BookmarkIcon as BookmarkSolid } from '@heroicons/react/24/solid';
 import type { TabInfo } from '../types';
 
 interface Props {
@@ -73,7 +83,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         onClick={onBack}
         aria-label="Back"
       >
-        ←
+        <ArrowLeftIcon className="icon" />
       </button>
       <button
         type="button"
@@ -82,7 +92,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         onClick={onForward}
         aria-label="Forward"
       >
-        →
+        <ArrowRightIcon className="icon" />
       </button>
       <button
         type="button"
@@ -90,7 +100,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         onClick={onReloadOrStop}
         aria-label={activeTab?.loading ? 'Stop' : 'Reload'}
       >
-        {activeTab?.loading ? '×' : '↻'}
+        {activeTab?.loading ? <XMarkIcon className="icon" /> : <ArrowPathIcon className="icon" />}
       </button>
 
       <div className={`address-bar-wrap ${editing ? 'focused' : ''}`}>
@@ -113,7 +123,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
           aria-label="Show downloadable media on this page"
           title="Show downloadable media on this page"
         >
-          🎬
+          <FilmIcon className="icon" />
         </button>
         <button
           type="button"
@@ -123,7 +133,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
           aria-label={bookmarked ? 'Remove bookmark' : 'Add bookmark'}
           title={bookmarked ? 'Remove bookmark' : 'Add bookmark'}
         >
-          {bookmarked ? '★' : '☆'}
+          {bookmarked ? <BookmarkSolid className="icon" /> : <BookmarkOutline className="icon" />}
         </button>
       </div>
 
@@ -134,7 +144,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         aria-label="Toggle side panel"
         title="History · Bookmarks · Downloads · Media (Cmd+B)"
       >
-        ☰
+        <Bars3Icon className="icon" />
       </button>
 
       <div className="profile-badge-wrap" ref={profileRef}>

@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { XMarkIcon } from '@heroicons/react/24/outline';
 
 interface Props {
   tabId: string | undefined;
@@ -43,7 +44,7 @@ export function FindBar({ tabId, onClose }: Props) {
         }}
       />
       <button type="button" className="find-close" onClick={close} aria-label="Close find bar">
-        ×
+        <XMarkIcon className="icon" />
       </button>
     </div>
   );

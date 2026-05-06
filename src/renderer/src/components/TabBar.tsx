@@ -1,4 +1,5 @@
 import { useRef } from 'react';
+import { MapPinIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import type { TabInfo } from '../types';
 
 interface Props {
@@ -38,7 +39,7 @@ export function TabBar({ tabs, onActivate, onClose, onNew, onPin, onUnpin, onReo
           }}
           title={tab.pinned ? 'Right-click to unpin' : 'Right-click to pin'}
         >
-          {tab.pinned && <span className="tab-pin">📌</span>}
+          {tab.pinned && <MapPinIcon className="tab-pin icon" />}
           {tab.loading ? (
             <div className="tab-spinner" />
           ) : tab.favicon ? (
@@ -55,7 +56,7 @@ export function TabBar({ tabs, onActivate, onClose, onNew, onPin, onUnpin, onReo
               }}
               aria-label="Close tab"
             >
-              ×
+              <XMarkIcon className="icon" />
             </button>
           )}
         </div>
