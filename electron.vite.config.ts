@@ -28,6 +28,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/renderer/index.html'),
           about: resolve(__dirname, 'src/renderer/about.html'),
           licenses: resolve(__dirname, 'src/renderer/licenses.html'),
+          newtab: resolve(__dirname, 'src/renderer/newtab.html'),
         },
       },
     },

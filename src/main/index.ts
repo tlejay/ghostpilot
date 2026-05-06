@@ -18,6 +18,7 @@ app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
 import { TabManager } from './tab-manager.js';
 import { HistoryStore } from './storage/history.js';
 import { BookmarksStore } from './storage/bookmarks.js';
+import { SkillsStore } from './storage/skills.js';
 import { DownloadManager } from './downloads.js';
 import { startMcpServer } from './mcp/server.js';
 import { buildMenu } from './menu.js';
@@ -45,6 +46,7 @@ interface AppContext {
   tabManager: TabManager;
   history: HistoryStore;
   bookmarks: BookmarksStore;
+  skills: SkillsStore;
   downloads: DownloadManager;
   recorder: Recorder;
   mediaDetector: MediaDetector;
@@ -276,6 +278,7 @@ app.whenReady().then(async () => {
   const window = createMainWindow();
   const history = new HistoryStore(profile);
   const bookmarks = new BookmarksStore(profile);
+  const skills = new SkillsStore(profile);
   const recorder = new Recorder();
   const ses = session.fromPartition(partition);
   recorder.attachNetwork(ses);
@@ -312,6 +315,7 @@ app.whenReady().then(async () => {
     tabManager,
     history,
     bookmarks,
+    skills,
     downloads,
     recorder,
     mediaDetector,
@@ -324,17 +328,20 @@ app.whenReady().then(async () => {
   attachAutoUpdater(window);
   Menu.setApplicationMenu(buildMenu({ window, tabManager }));
 
-  tabManager.newTab('https://www.google.com');
+  tabManager.newTab();
 
   const port = Number(process.env.AI_BROWSER_MCP_PORT ?? 9223);
   const token = process.env.AI_BROWSER_MCP_TOKEN?.trim() || undefined;
+  const oauthPassword = process.env.GHOSTPILOT_OAUTH_PASSWORD?.trim() || undefined;
   await startMcpServer({
     port,
     token,
+    oauthPassword,
     profile,
     tabManager,
     history,
     bookmarks,
+    skills,
     downloads,
     recorder,
     mediaDetector,
@@ -342,10 +349,15 @@ app.whenReady().then(async () => {
     ytdlp,
     updateChecker,
   });
+  const authMode = oauthPassword
+    ? token
+      ? 'oauth + bearer'
+      : 'oauth'
+    : token
+      ? 'bearer'
+      : 'open';
   console.log(
-    `[GhostPilot] profile="${profile}" — MCP on http://127.0.0.1:${port}/mcp${
-      token ? ' (auth: bearer)' : ''
-    }`,
+    `[GhostPilot] profile="${profile}" — MCP on http://127.0.0.1:${port}/mcp (auth: ${authMode})`,
   );
 
   app.on('activate', () => {
@@ -377,6 +389,7 @@ app.whenReady().then(async () => {
         tabManager: tm,
         history,
         bookmarks,
+        skills,
         downloads: dl,
         recorder: rec,
         mediaDetector: md,
@@ -386,7 +399,7 @@ app.whenReady().then(async () => {
         profile,
       };
       Menu.setApplicationMenu(buildMenu({ window: win, tabManager: tm }));
-      tm.newTab('https://www.google.com');
+      tm.newTab();
     }
   });
 });

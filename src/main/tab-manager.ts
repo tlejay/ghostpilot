@@ -1,11 +1,21 @@
 import { BrowserWindow, WebContentsView } from 'electron';
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type { HistoryStore } from './storage/history.js';
 import type { Recorder } from './recorder.js';
 import type { MediaDetector } from './media-detector.js';
 
 export const DEFAULT_TOOLBAR_HEIGHT = 88; // 40 (tabs row) + 48 (address row)
 export const TOOLBAR_HEIGHT = DEFAULT_TOOLBAR_HEIGHT;
+
+// Welcome page replaces Google as the default new-tab landing — explains what
+// GhostPilot can do and offers sample Claude prompts.
+export function welcomeUrl(): string {
+  const dev = process.env['ELECTRON_RENDERER_URL'];
+  if (dev) return `${dev}/newtab.html`;
+  return pathToFileURL(join(__dirname, '../renderer/newtab.html')).toString();
+}
 
 export interface TabInfo {
   id: string;
@@ -82,7 +92,7 @@ export class TabManager {
     this.tabs.set(id, tab);
     this.order.push(id);
 
-    const url = normalizeUrl(rawUrl ?? 'https://www.google.com');
+    const url = rawUrl ? normalizeUrl(rawUrl) : welcomeUrl();
     const wc = view.webContents;
     this.wcToTab.set(wc.id, id);
     this.recorder.attachConsole(id, wc);
