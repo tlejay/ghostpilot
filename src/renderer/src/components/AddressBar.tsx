@@ -141,10 +141,11 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         <button
           type="button"
           className="profile-badge"
-          title="Click to switch profile"
+          title={`Profile: ${profile} — click to switch`}
           onClick={() => setProfileOpen((o) => !o)}
         >
-          👤 {profile}
+          <span className="profile-avatar">{profile[0].toUpperCase()}</span>
+          <span className="profile-name">{profile}</span>
         </button>
         {profileOpen && (
           <div className="profile-dropdown">
@@ -160,7 +161,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
             ))}
             <div className="profile-new">
               <input
-                placeholder="New profile name…"
+                placeholder="New profile…"
                 value={newProfile}
                 onChange={(e) => setNewProfile(e.target.value)}
                 onKeyDown={(e) => {
@@ -174,12 +175,10 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         )}
       </div>
       <div
-        className="mcp-badge"
-        title="Claude CLI can drive this browser via the embedded MCP server"
-      >
-        <div className="mcp-dot" style={{ background: mcpStatus === 'ok' ? '#34a853' : '#ea4335' }} />
-        MCP
-      </div>
+        className="mcp-dot-only"
+        title={`MCP ${mcpStatus === 'ok' ? 'connected' : 'disconnected'} — Claude CLI can drive this browser`}
+        style={{ background: mcpStatus === 'ok' ? '#34a853' : '#ea4335' }}
+      />
     </form>
   );
 });

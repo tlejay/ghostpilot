@@ -148,30 +148,32 @@ button {
 }
 
 .nav-btn {
-  width: 32px;
-  height: 32px;
+  width: 30px;
+  height: 30px;
   border: none;
   background: transparent;
   cursor: pointer;
-  border-radius: 50%;
-  font-size: 16px;
+  border-radius: 8px;
+  font-size: 15px;
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  color: #9aa0a6;
+  transition: background 0.12s, color 0.12s;
 }
 
 .nav-btn:hover:not(:disabled) {
-  background: #3c4043;
+  background: #2d2e30;
+  color: #e8eaed;
 }
 
 .nav-btn:disabled {
-  color: #5f6368;
+  color: #3c4043;
   cursor: default;
 }
 
 .nav-btn.active {
-  background: #1e3a5f;
   color: #8ab4f8;
 }
 
@@ -179,17 +181,18 @@ button {
   flex: 1;
   display: flex;
   align-items: center;
-  height: 36px;
-  background: #303134;
+  height: 34px;
+  background: #2a2b2d;
   border: 1px solid transparent;
-  border-radius: 18px;
-  padding: 0 8px 0 16px;
+  border-radius: 10px;
+  padding: 0 8px 0 14px;
   gap: 4px;
+  transition: border-color 0.15s, background 0.15s;
 }
 
 .address-bar-wrap.focused {
-  background: #202124;
-  border-color: #8ab4f8;
+  background: #1e1f21;
+  border-color: rgba(138, 180, 248, 0.6);
 }
 
 .address-bar {
@@ -353,33 +356,56 @@ button {
 .profile-badge {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: #2d2e30;
+  gap: 5px;
+  padding: 3px 6px 3px 3px;
+  background: transparent;
   border: none;
-  border-radius: 12px;
+  border-radius: 20px;
   font-size: 11px;
-  color: #bdc1c6;
+  color: #8b949e;
   cursor: pointer;
+  transition: background 0.15s, color 0.15s;
 }
 
 .profile-badge:hover {
+  background: #2d2e30;
+  color: #e8eaed;
+}
+
+.profile-avatar {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
   background: #3c4043;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10px;
+  font-weight: 600;
+  color: #e8eaed;
+  flex-shrink: 0;
+  line-height: 1;
+}
+
+.profile-name {
+  font-size: 11px;
+  letter-spacing: 0.01em;
 }
 
 .profile-dropdown {
   position: absolute;
-  top: calc(100% + 6px);
+  top: calc(100% + 8px);
   right: 0;
-  background: #2d2e30;
-  border: 1px solid #3c4043;
-  border-radius: 8px;
+  background: #1e1f21;
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 10px;
   padding: 6px;
   min-width: 160px;
   z-index: 100;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
 }
 
 .profile-option {
@@ -387,7 +413,7 @@ button {
   text-align: left;
   border: none;
   background: transparent;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: 6px;
   cursor: pointer;
   font-size: 12px;
@@ -395,43 +421,36 @@ button {
 }
 
 .profile-option:hover {
-  background: #3c4043;
+  background: #2d2e30;
 }
 
 .profile-new input {
   width: 100%;
-  background: #202124;
-  border: 1px solid #5f6368;
+  background: #2d2e30;
+  border: 1px solid rgba(255,255,255,0.08);
   border-radius: 6px;
-  padding: 5px 8px;
+  padding: 6px 8px;
   color: #e8eaed;
   font-size: 12px;
   outline: none;
-  margin-top: 2px;
+  margin-top: 4px;
 }
 
 .profile-new input:focus {
   border-color: #8ab4f8;
 }
 
-.mcp-badge {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  background: #1e3a5f;
-  color: #8ab4f8;
-  border-radius: 12px;
-  font-size: 11px;
-  font-weight: 500;
+/* ── MCP dot only ──────────────────────────────────────────────────── */
+
+.mcp-dot-only {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  cursor: default;
+  margin-left: 2px;
 }
 
-.mcp-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: #34a853;
-}
 
 /* ── Side panel ────────────────────────────────────────────────────── */
 
