@@ -8,7 +8,7 @@ A Chrome-like Mac browser you actually use day-to-day, with an MCP server baked 
 
 Built with Electron 33 + React + TypeScript, Vite, and `@modelcontextprotocol/sdk`. From [madebytle.com](https://madebytle.com).
 
-> **Status:** v0.2 — daily-driver-ready. Tabs, history, bookmarks, downloads, multi-profile, DevTools, raw CDP access, Chrome import, and a **47-tool MCP surface**.
+> **Status:** v0.2 — daily-driver-ready. Tabs, history, bookmarks, downloads, multi-profile, DevTools, raw CDP access, Chrome import, OAuth-secured remote control from Claude on iPhone/web, a self-learning skill registry, and a **57-tool MCP surface**.
 
 ## Why
 
@@ -26,7 +26,9 @@ Most "AI browsers" are sandboxed CDP shells aimed at headless automation. GhostP
 - **DevTools** for the active page (`Cmd+Opt+I`)
 - **Import from Chrome** — bookmarks (JSON) and history (SQLite via sql.js), one click in the side panel or via MCP
 - **Update notifications** — checks GitHub releases (or your own manifest URL) on startup and nags through the MCP CLI banner until you upgrade
-- **Embedded MCP server** with optional bearer-token auth, 38 tools (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access
+- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **57 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access
+- **Mobile-ready connector** — pair with a tunnel (cloudflared / ngrok) and Claude on iPhone, iPad, or web can pilot this browser. No other Mac browser supports this today.
+- **Self-learning skill registry** — Claude can save proven step-by-step playbooks (`save_skill`) and replay them on the next run (`list_skills` / `get_skill`). Works across Claude Code CLI, Claude.ai web, and the Claude mobile app.
 - **Standard Chrome shortcuts** — `Cmd+T/W/L/R`, `Cmd+[/]`, `Cmd+B` for the side panel
 - **About + Open Source Licenses** windows accessible from the GhostPilot menu
 - **`ghost` Claude Code agent** — a project-level agent (`.claude/agents/ghost.md`) that ships with the repo. When you use Claude Code inside GhostPilot, `ghost` checks a skill index first, follows proven step-by-step playbooks for known tasks (e.g. navigating to a Facebook friend's profile), and writes a new skill automatically after completing an unfamiliar task — so every browser workflow gets faster over time. Clone the repo and you get it for free.
@@ -57,7 +59,7 @@ Then in any project, run `claude` and try:
 > "Show me my history from the last hour."
 > "Go to events.madebytle.com, screenshot it, and tell me what's on the homepage."
 
-### Tool surface (47)
+### Tool surface (57)
 
 | Group | Tools |
 |-------|-------|
@@ -74,7 +76,10 @@ Then in any project, run `claude` and try:
 | History (2) | `history_list`, `history_clear` |
 | Bookmarks (3) | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove` |
 | Downloads (4) | `downloads_list`, `downloads_cancel`, `downloads_reveal`, `downloads_clear` |
+| Media (3) | `list_media`, `download_media`, `clear_media` — sniffs video/audio/HLS/DASH on the active tab |
+| Video downloader (3) | `ytdlp_status`, `download_with_ytdlp`, `list_ytdlp_jobs` — downloads anything that plays in a browser tab |
 | Chrome import (3) | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
+| Skills (4) | `list_skills`, `get_skill`, `save_skill`, `delete_skill` — reusable browser-automation playbooks shared across every MCP client |
 | Updates (1) | `check_for_updates` |
 
 Every tool that takes `tabId` falls back to the active tab when omitted.
@@ -100,6 +105,7 @@ GhostPilot is at full parity for the surfaces an LLM agent actually uses:
 |-----|---------|---------|
 | `AI_BROWSER_MCP_PORT` | `9223` | Port for the embedded MCP server |
 | `AI_BROWSER_MCP_TOKEN` | _unset_ | If set, `/mcp` requires `Authorization: Bearer <token>` |
+| `GHOSTPILOT_OAUTH_PASSWORD` | _unset_ | If set, the MCP server enables OAuth 2.1 + PKCE with this password gating the authorize step. Required for connecting Claude.ai web / iPhone over a tunnel. |
 | `AI_BROWSER_PROFILE` | `default` | Profile name (alphanumeric + `_-`, ≤32 chars). Each profile has isolated cookies, storage, history, bookmarks, and downloads. |
 | `AI_BROWSER_UPDATE_URL` | GitHub releases | Manifest URL for update checks. JSON shape: `{ "version": "0.3.0", "url": "...", "notes": "..." }`. Default uses the GitHub releases API. |
 | `AI_BROWSER_UPDATE_NAG` | `on` | Set to `off` to silence the update banner injected into MCP responses. |
@@ -115,7 +121,7 @@ AI_BROWSER_PROFILE=work pnpm dev
 AI_BROWSER_PROFILE=personal open -a "GhostPilot"
 ```
 
-### Auth-protected MCP
+### Auth-protected MCP (Claude Code CLI)
 
 ```bash
 export AI_BROWSER_MCP_TOKEN=$(openssl rand -hex 24)
@@ -126,6 +132,32 @@ pnpm dev
 claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp \
   --header "Authorization: Bearer $AI_BROWSER_MCP_TOKEN"
 ```
+
+### Connect from Claude.ai (web / iPhone / iPad)
+
+GhostPilot ships an OAuth 2.1 + PKCE provider so any MCP client that speaks OAuth — including Claude on every surface — can authorize and pilot the browser through a public tunnel.
+
+```bash
+# 1. Pick a strong password — it's the only thing gating remote control.
+export GHOSTPILOT_OAUTH_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)
+
+# 2. Boot GhostPilot.
+pnpm dev      # or open the installed app
+
+# 3. In another terminal, expose port 9223 over HTTPS.
+brew install cloudflared      # one-time
+cloudflared tunnel --url http://127.0.0.1:9223
+# → prints "https://<random>.trycloudflare.com"
+```
+
+In Claude.ai → Settings → Connectors → **Add custom connector**:
+
+- **Remote MCP server URL**: `https://<your-tunnel>.trycloudflare.com/mcp`
+- Leave Client ID / Secret blank — GhostPilot supports RFC 7591 dynamic client registration.
+
+On the next call, Claude opens a login page from your tunnel; type the password to authorize. Tokens persist across restarts (per-profile). The connector then syncs to the Claude mobile app, so iPhone can drive the browser too.
+
+> **Threat model.** Anyone who has both the tunnel URL **and** the password gets full control of every tab in this browser, including any logged-in sessions. Use a strong password, keep the tunnel down when not in use, and prefer named Cloudflare tunnels with Cloudflare Access on top for production setups.
 
 ## Build a DMG
 
@@ -158,7 +190,8 @@ pnpm assets:licenses
 │  │  · Web-      │  │  · history  │  │  · Express   │   │
 │  │    Contents  │  │  · book-    │  │  · Stream-   │   │
 │  │    View      │  │    marks    │  │    ableHTTP  │   │
-│  │  · partition │  │  · downloads│  │  · 26 tools  │   │
+│  │  · partition │  │  · downloads│  │  · OAuth 2.1 │   │
+│  │              │  │  · skills   │  │  · 57 tools  │   │
 │  └─────┬────────┘  └─────┬───────┘  └──────┬───────┘   │
 │        │                 │                 │           │
 │        └─────────────────┼─────────────────┘           │
@@ -168,7 +201,7 @@ pnpm assets:licenses
               ┌────────────▼────────────┐
               │   Renderer (Vite)       │
               │   index · about ·       │
-              │   licenses              │
+              │   licenses · newtab     │
               └─────────────────────────┘
 ```
 

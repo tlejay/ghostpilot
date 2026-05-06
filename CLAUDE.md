@@ -11,6 +11,7 @@ Mac app เบราว์เซอร์แบบ Chrome ที่ Tle ใช�
 - Persisted: history, bookmarks, downloads (ไฟล์ JSON ใน `app.getPath('userData')/profiles/<profile>/`)
 - **Multi-profile**: ตั้ง `AI_BROWSER_PROFILE=work` หรือ `personal` ก่อนเปิด → cookies/storage แยกขาดกัน
 - **Auth optional**: ตั้ง `AI_BROWSER_MCP_TOKEN=...` เพื่อบังคับ bearer token ที่ MCP endpoint
+- **Remote Auth (OAuth 2.1 + PKCE)**: ตั้ง `GHOSTPILOT_OAUTH_PASSWORD=...` เพื่อเปิด OAuth flow สำหรับ Claude.ai custom connector — รองรับ Dynamic Client Registration (RFC 7591), PKCE S256, refresh token rotation; ใช้คู่กับ tunnel (cloudflared/ngrok) เพื่อให้ Claude.ai บน iPhone/Web เชื่อมเข้ามาควบคุมได้อย่างปลอดภัย
 - **About + Open Source Licenses windows** เปิดจาก GhostPilot menu — โชว์ลิขสิทธิ์ของ deps ทุกตัวที่ bundle ไป (compliance MIT/ISC/BSD-3 ฯลฯ)
 
 ## Tech Stack
@@ -106,7 +107,7 @@ App เปิด → MCP server ขึ้นที่ `http://127.0.0.1:9223/mcp
 claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
 ```
 
-### Tool surface (47 ตัว)
+### Tool surface (51 ตัว)
 
 | Group | Tools |
 |-------|-------|
@@ -124,6 +125,7 @@ claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
 | Bookmarks (3) | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove` |
 | Downloads (4) | `downloads_list`, `downloads_cancel`, `downloads_reveal`, `downloads_clear` |
 | Chrome import (3) | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
+| Skills (4) | `list_skills`, `get_skill`, `save_skill`, `delete_skill` — self-teaching playbook registry; works across CLI/web/mobile clients |
 | Updates (1) | `check_for_updates` |
 
 ทุก tool ที่รับ `tabId?` → ถ้าไม่ส่ง ใช้ active tab อัตโนมัติ
