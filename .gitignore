@@ -30,5 +30,12 @@ yarn.lock
 # Personal context (local only, never shared)
 .ghost-personal.md
 
+# Auto-generated ghost skills — every new <skill>/ subdir stays local, in case
+# selectors, URLs, or notes captured during a real task contain sensitive data.
+# Already-tracked skills (e.g. facebook-search-friend) are unaffected — gitignore
+# does not untrack files that are already in the repo. Index file is intentionally
+# kept tracked so the project ships with a usable agent skeleton.
+.claude/skills/*/
+
 # Playwright
 test-results/
