@@ -21,7 +21,7 @@ URL-encode the name and navigate straight to the search results — skips the se
 mcp__ghostpilot__navigate  url="https://www.facebook.com/search/people/?q=<URL-encoded name>"
 ```
 
-Example: "Prasert Jaipet" → `https://www.facebook.com/search/people/?q=Prasert%20Jaipet`
+Example: "Mark Zuckerberg" → `https://www.facebook.com/search/people/?q=Mark%20Zuckerberg`
 
 If Facebook isn't open yet, use `new_tab` instead of `navigate`.
 
