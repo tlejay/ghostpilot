@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { TabBar } from './components/TabBar';
 import { AddressBar } from './components/AddressBar';
 import { FindBar } from './components/FindBar';
@@ -15,8 +15,21 @@ export function App() {
   const [findOpen, setFindOpen] = useState(false);
   const addressRef = useRef<HTMLInputElement>(null);
   const chromeRef = useRef<HTMLDivElement>(null);
+  // Extra height reserved for overlays (profile dropdown etc.) that must sit
+  // inside the chrome region to avoid being occluded by the native WebContentsView.
+  const extraChromeHeight = useRef(0);
 
   const activeTab = useMemo(() => tabs.find((t) => t.active), [tabs]);
+
+  // Called by AddressBar when the profile dropdown opens/closes so we can
+  // push the WebContentsView down to prevent it from occluding the overlay.
+  const handleProfileOpenChange = useCallback((open: boolean) => {
+    extraChromeHeight.current = open ? 200 : 0;
+    if (chromeRef.current) {
+      const h = Math.round(chromeRef.current.getBoundingClientRect().height) + extraChromeHeight.current;
+      window.api.tabs.setToolbarHeight(h);
+    }
+  }, []);
 
   // Tell the main process whenever the chrome region's height changes — the
   // banner pushes everything down ~30px, and the WebContentsView needs to
@@ -25,7 +38,7 @@ export function App() {
     if (!chromeRef.current) return;
     const observer = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const h = Math.round(entry.contentRect.height);
+        const h = Math.round(entry.contentRect.height) + extraChromeHeight.current;
         window.api.tabs.setToolbarHeight(h);
       }
     });
@@ -125,6 +138,7 @@ export function App() {
           sidePanelOpen={sidePanelOpen}
           profile={profile}
           mcpStatus="ok"
+          onProfileOpenChange={handleProfileOpenChange}
         />
       </div>
       {sidePanelOpen ? (

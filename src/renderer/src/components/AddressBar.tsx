@@ -24,6 +24,7 @@ interface Props {
   sidePanelOpen: boolean;
   profile: string;
   mcpStatus: 'ok' | 'unknown';
+  onProfileOpenChange?: (open: boolean) => void;
 }
 
 export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBar(
@@ -40,6 +41,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
     sidePanelOpen,
     profile,
     mcpStatus,
+    onProfileOpenChange,
   },
   ref,
 ) {
@@ -50,12 +52,17 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
   const [newProfile, setNewProfile] = useState('');
   const profileRef = useRef<HTMLDivElement>(null);
 
+  const openProfile = (open: boolean) => {
+    setProfileOpen(open);
+    onProfileOpenChange?.(open);
+  };
+
   useEffect(() => {
     if (!profileOpen) return;
     window.api.profile.list().then(setProfiles);
     const handler = (e: MouseEvent) => {
       if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
-        setProfileOpen(false);
+        openProfile(false);
       }
     };
     document.addEventListener('mousedown', handler);
@@ -152,7 +159,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
           type="button"
           className="profile-badge"
           title={`Profile: ${profile} — click to switch`}
-          onClick={() => setProfileOpen((o) => !o)}
+          onClick={() => openProfile(!profileOpen)}
         >
           <span className="profile-avatar">{profile[0].toUpperCase()}</span>
           <span className="profile-name">{profile}</span>
@@ -164,7 +171,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
                 key={p}
                 type="button"
                 className="profile-option"
-                onClick={() => window.api.profile.switch(p)}
+                onClick={() => { openProfile(false); window.api.profile.switch(p); }}
               >
                 {p}
               </button>
@@ -176,6 +183,7 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
                 onChange={(e) => setNewProfile(e.target.value)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && newProfile.trim()) {
+                    openProfile(false);
                     window.api.profile.switch(newProfile.trim());
                   }
                 }}

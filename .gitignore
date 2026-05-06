@@ -29,3 +29,6 @@ yarn.lock
 
 # Personal context (local only, never shared)
 .ghost-personal.md
+
+# Playwright
+test-results/
