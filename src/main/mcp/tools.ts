@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { TabManager } from '../tab-manager.js';
 import type { HistoryStore } from '../storage/history.js';
 import type { BookmarksStore } from '../storage/bookmarks.js';
+import type { SkillsStore } from '../storage/skills.js';
 import type { DownloadManager } from '../downloads.js';
 import type { Recorder } from '../recorder.js';
 import type { MediaDetector } from '../media-detector.js';
@@ -16,6 +17,7 @@ export interface ToolDeps {
   tabManager: TabManager;
   history: HistoryStore;
   bookmarks: BookmarksStore;
+  skills: SkillsStore;
   downloads: DownloadManager;
   recorder: Recorder;
   mediaDetector: MediaDetector;
@@ -38,6 +40,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     tabManager,
     history,
     bookmarks,
+    skills,
     downloads,
     recorder,
     mediaDetector,
@@ -1006,6 +1009,68 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       inputSchema: {},
     },
     async () => text(ytdlp.list()),
+  );
+
+  // ── Skills (reusable browser automation playbooks) ────────────────
+  // Skills are saved markdown bodies — steps, selectors, pitfalls — that any
+  // MCP client can fetch to repeat a task quickly. The intended workflow:
+  //   1. Before a browser task, call list_skills to see if one already covers
+  //      the target site/action.
+  //   2. If a skill matches, get_skill and follow it.
+  //   3. After a successful task without a matching skill, save_skill so the
+  //      next run is fast.
+  server.registerTool(
+    'list_skills',
+    {
+      description:
+        'List saved browser-automation skills (no body). **Call this first when starting any non-trivial browser task** — if a skill matches the target site/action, fetch it with get_skill and follow its steps instead of improvising. Filter by domain (e.g. "facebook.com") or free-text query.',
+      inputSchema: {
+        domain: z.string().optional(),
+        query: z.string().optional(),
+      },
+    },
+    async ({ domain, query }) => text(await skills.list({ domain, query })),
+  );
+
+  server.registerTool(
+    'get_skill',
+    {
+      description:
+        'Fetch the full markdown body of a skill (steps, selectors, pitfalls). Records that the skill was used so most-used skills float to the top of list_skills.',
+      inputSchema: { id: z.string() },
+    },
+    async ({ id }) => {
+      const skill = await skills.get(id);
+      if (!skill) return text({ error: `Skill not found: ${id}` });
+      await skills.recordUse(id);
+      return text(skill);
+    },
+  );
+
+  server.registerTool(
+    'save_skill',
+    {
+      description:
+        'Save (or update) a reusable skill. **After completing any non-trivial browser task without a matching skill, call this** with what you did — exact selectors, key steps, pitfalls — so future runs short-circuit. id is a slug like "facebook-search-friend"; if omitted, derived from name. body is markdown.',
+      inputSchema: {
+        id: z.string().optional(),
+        name: z.string(),
+        description: z.string(),
+        domain: z.string().optional(),
+        triggers: z.array(z.string()).optional(),
+        body: z.string(),
+      },
+    },
+    async (input) => text(await skills.save(input)),
+  );
+
+  server.registerTool(
+    'delete_skill',
+    {
+      description: 'Remove a skill by id. Use only when the skill is broken or obsolete.',
+      inputSchema: { id: z.string() },
+    },
+    async ({ id }) => text({ ok: await skills.delete(id) }),
   );
 
   // ── Updates ───────────────────────────────────────────────────────
