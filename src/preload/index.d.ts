@@ -2,10 +2,12 @@ export interface TabInfo {
   id: string;
   url: string;
   title: string;
+  favicon?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
+  pinned: boolean;
 }
 
 export interface HistoryEntry {
@@ -97,6 +99,11 @@ export interface Api {
     toggleDevTools(id: string): Promise<void>;
     setToolbarHeight(height: number): Promise<void>;
     setSidePanelWidth(width: number): Promise<void>;
+    pin(id: string): Promise<void>;
+    unpin(id: string): Promise<void>;
+    reorder(id: string, toIndex: number): Promise<void>;
+    find(id: string, text: string): Promise<void>;
+    findStop(id: string): Promise<void>;
     onUpdated(cb: (tabs: TabInfo[]) => void): () => void;
   };
   history: {
@@ -139,6 +146,8 @@ export interface Api {
   };
   profile: {
     current(): Promise<string>;
+    list(): Promise<string[]>;
+    switch(name: string): Promise<void>;
   };
   chrome: {
     listProfiles(): Promise<string[]>;
@@ -199,6 +208,7 @@ export interface Api {
   events: {
     onFocusAddressBar(cb: () => void): () => void;
     onToggleSidePanel(cb: () => void): () => void;
+    onOpenFindBar(cb: () => void): () => void;
   };
 }
 

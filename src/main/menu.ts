@@ -140,6 +140,11 @@ export function buildMenu({ window, tabManager }: MenuOptions): Menu {
       label: 'Tools',
       submenu: [
         {
+          label: 'Find in Page',
+          accelerator: 'CmdOrCtrl+F',
+          click: () => window.webContents.send('focus:find-bar'),
+        },
+        {
           label: 'Focus Address Bar',
           accelerator: 'CmdOrCtrl+L',
           click: () => window.webContents.send('focus:address-bar'),

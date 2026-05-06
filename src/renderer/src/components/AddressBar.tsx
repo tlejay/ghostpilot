@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useState } from 'react';
+import { forwardRef, useEffect, useRef, useState } from 'react';
 import type { TabInfo } from '../types';
 
 interface Props {
@@ -35,6 +35,22 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
 ) {
   const [draft, setDraft] = useState('');
   const [editing, setEditing] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [profiles, setProfiles] = useState<string[]>([]);
+  const [newProfile, setNewProfile] = useState('');
+  const profileRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!profileOpen) return;
+    window.api.profile.list().then(setProfiles);
+    const handler = (e: MouseEvent) => {
+      if (profileRef.current && !profileRef.current.contains(e.target as Node)) {
+        setProfileOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [profileOpen]);
 
   useEffect(() => {
     if (!editing) setDraft(activeTab?.url ?? '');
@@ -121,8 +137,41 @@ export const AddressBar = forwardRef<HTMLInputElement, Props>(function AddressBa
         ☰
       </button>
 
-      <div className="profile-badge" title="Active profile (set with AI_BROWSER_PROFILE)">
-        👤 {profile}
+      <div className="profile-badge-wrap" ref={profileRef}>
+        <button
+          type="button"
+          className="profile-badge"
+          title="Click to switch profile"
+          onClick={() => setProfileOpen((o) => !o)}
+        >
+          👤 {profile}
+        </button>
+        {profileOpen && (
+          <div className="profile-dropdown">
+            {profiles.filter((p) => p !== profile).map((p) => (
+              <button
+                key={p}
+                type="button"
+                className="profile-option"
+                onClick={() => window.api.profile.switch(p)}
+              >
+                {p}
+              </button>
+            ))}
+            <div className="profile-new">
+              <input
+                placeholder="New profile name…"
+                value={newProfile}
+                onChange={(e) => setNewProfile(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && newProfile.trim()) {
+                    window.api.profile.switch(newProfile.trim());
+                  }
+                }}
+              />
+            </div>
+          </div>
+        )}
       </div>
       <div
         className="mcp-badge"

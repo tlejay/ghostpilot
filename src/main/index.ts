@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, shell } from 'electron';
+import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
 // In dev mode the running Electron.app's CFBundleName is "Electron", which
@@ -107,6 +108,13 @@ function registerIpc(): void {
   ipcMain.handle('tabs:reload', (_e, id: string) => tm()?.reload(id));
   ipcMain.handle('tabs:stop', (_e, id: string) => tm()?.stop(id));
   ipcMain.handle('tabs:devtools', (_e, id: string) => tm()?.toggleDevTools(id));
+  ipcMain.handle('tabs:pin', (_e, id: string) => tm()?.pinTab(id));
+  ipcMain.handle('tabs:unpin', (_e, id: string) => tm()?.unpinTab(id));
+  ipcMain.handle('tabs:reorder', (_e, id: string, toIndex: number) =>
+    tm()?.reorderTab(id, toIndex),
+  );
+  ipcMain.handle('tabs:find', (_e, id: string, text: string) => tm()?.findInPage(id, text));
+  ipcMain.handle('tabs:find-stop', (_e, id: string) => tm()?.stopFindInPage(id));
   ipcMain.handle('chrome:set-toolbar-height', (_e, height: number) =>
     tm()?.setToolbarHeight(height),
   );
@@ -176,6 +184,22 @@ function registerIpc(): void {
   ipcMain.handle('ytdlp:clear', () => ctx?.ytdlp.clearFinished());
 
   ipcMain.handle('profile:current', () => ctx?.profile ?? 'default');
+  ipcMain.handle('profile:list', () => {
+    try {
+      const profilesDir = join(app.getPath('userData'), 'profiles');
+      return readdirSync(profilesDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name);
+    } catch {
+      return [ctx?.profile ?? 'default'];
+    }
+  });
+  ipcMain.handle('profile:switch', (_e, name: string) => {
+    if (!name || !/^[\w-]{1,32}$/.test(name)) return;
+    process.env['AI_BROWSER_PROFILE'] = name;
+    app.relaunch({ args: process.argv.slice(1) });
+    app.exit(0);
+  });
 
   ipcMain.handle('app:info', () => ({
     name: app.getName(),

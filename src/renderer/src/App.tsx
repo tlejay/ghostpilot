@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { TabBar } from './components/TabBar';
 import { AddressBar } from './components/AddressBar';
+import { FindBar } from './components/FindBar';
 import { SidePanel, type SidePanelTab } from './components/SidePanel';
 import { UpdateBanner } from './components/UpdateBanner';
 import type { TabInfo } from './types';
@@ -11,6 +12,7 @@ export function App() {
   const [profile, setProfile] = useState('default');
   const [sidePanelOpen, setSidePanelOpen] = useState(false);
   const [sidePanelTab, setSidePanelTab] = useState<SidePanelTab>('bookmarks');
+  const [findOpen, setFindOpen] = useState(false);
   const addressRef = useRef<HTMLInputElement>(null);
   const chromeRef = useRef<HTMLDivElement>(null);
 
@@ -53,9 +55,11 @@ export function App() {
     const offToggle = window.api.events.onToggleSidePanel(() => {
       setSidePanelOpen((open) => !open);
     });
+    const offFind = window.api.events.onOpenFindBar(() => setFindOpen(true));
     return () => {
       offFocus();
       offToggle();
+      offFind();
     };
   }, []);
 
@@ -93,7 +97,13 @@ export function App() {
           onActivate={(id) => window.api.tabs.activate(id)}
           onClose={(id) => window.api.tabs.close(id)}
           onNew={() => window.api.tabs.open()}
+          onPin={(id) => window.api.tabs.pin(id)}
+          onUnpin={(id) => window.api.tabs.unpin(id)}
+          onReorder={(id, index) => window.api.tabs.reorder(id, index)}
         />
+        {findOpen && (
+          <FindBar tabId={activeTab?.id} onClose={() => setFindOpen(false)} />
+        )}
         <AddressBar
           ref={addressRef}
           activeTab={activeTab}

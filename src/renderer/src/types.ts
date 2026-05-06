@@ -3,10 +3,12 @@ export interface TabInfo {
   id: string;
   url: string;
   title: string;
+  favicon?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
+  pinned: boolean;
 }
 
 export interface HistoryEntry {

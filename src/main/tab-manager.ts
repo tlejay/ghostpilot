@@ -11,15 +11,18 @@ export interface TabInfo {
   id: string;
   url: string;
   title: string;
+  favicon?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
+  pinned: boolean;
 }
 
 interface InternalTab {
   id: string;
   view: WebContentsView;
+  pinned: boolean;
 }
 
 interface TabManagerOptions {
@@ -45,6 +48,7 @@ export class TabManager {
   private tabs = new Map<string, InternalTab>();
   private order: string[] = [];
   private activeId: string | null = null;
+  private favicons = new Map<string, string>();
   private window: BrowserWindow;
   private partition: string;
   private history: HistoryStore;
@@ -74,7 +78,7 @@ export class TabManager {
       },
     });
     const id = randomUUID();
-    const tab: InternalTab = { id, view };
+    const tab: InternalTab = { id, view, pinned: false };
     this.tabs.set(id, tab);
     this.order.push(id);
 
@@ -93,6 +97,10 @@ export class TabManager {
     wc.on('did-navigate-in-page', emit);
     wc.on('did-start-loading', emit);
     wc.on('did-stop-loading', emit);
+    wc.on('page-favicon-updated', (_e, favicons) => {
+      if (favicons[0]) this.favicons.set(id, favicons[0]);
+      emit();
+    });
 
     // Record history on full navigation finish
     wc.on('did-finish-load', () => {
@@ -135,6 +143,7 @@ export class TabManager {
     this.mediaDetector.detach(id);
     this.wcToTab.delete(wcId);
     this.tabs.delete(id);
+    this.favicons.delete(id);
     this.order = this.order.filter((x) => x !== id);
 
     if (this.activeId === id) {
@@ -271,6 +280,50 @@ export class TabManager {
     return true;
   }
 
+  pinTab(id: string): void {
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+    tab.pinned = true;
+    // Move pinned tab to the front of the pinned group
+    this.order = [id, ...this.order.filter((x) => x !== id)];
+    this.broadcastTabs();
+  }
+
+  unpinTab(id: string): void {
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+    tab.pinned = false;
+    this.broadcastTabs();
+  }
+
+  reorderTab(id: string, toIndex: number): void {
+    const from = this.order.indexOf(id);
+    if (from === -1) return;
+    const tab = this.tabs.get(id);
+    // Pinned tabs cannot be dragged past unpinned ones and vice versa
+    const pinned = tab?.pinned ?? false;
+    const newOrder = [...this.order];
+    newOrder.splice(from, 1);
+    const clampedIndex = Math.max(0, Math.min(toIndex, newOrder.length));
+    newOrder.splice(clampedIndex, 0, id);
+    // Validate: pinned tabs must all precede unpinned tabs
+    const pinnedCount = newOrder.filter((i) => this.tabs.get(i)?.pinned).length;
+    const pinnedSection = newOrder.slice(0, pinnedCount).every((i) => this.tabs.get(i)?.pinned);
+    if (!pinnedSection && pinned) return; // would break ordering
+    this.order = newOrder;
+    this.broadcastTabs();
+  }
+
+  findInPage(id: string, text: string): void {
+    const wc = this.tabs.get(id)?.view.webContents;
+    if (!wc || !text) return;
+    wc.findInPage(text, { findNext: false });
+  }
+
+  stopFindInPage(id: string): void {
+    this.tabs.get(id)?.view.webContents.stopFindInPage('clearSelection');
+  }
+
   listTabs(): TabInfo[] {
     return this.order
       .map((id) => this.tabs.get(id))
@@ -332,10 +385,12 @@ export class TabManager {
       id: tab.id,
       url: wc.getURL(),
       title: wc.getTitle(),
+      favicon: this.favicons.get(tab.id),
       loading: wc.isLoading(),
       canGoBack: wc.navigationHistory.canGoBack(),
       canGoForward: wc.navigationHistory.canGoForward(),
       active: this.activeId === tab.id,
+      pinned: tab.pinned,
     };
   }
 

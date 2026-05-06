@@ -4,10 +4,12 @@ export interface TabInfo {
   id: string;
   url: string;
   title: string;
+  favicon?: string;
   loading: boolean;
   canGoBack: boolean;
   canGoForward: boolean;
   active: boolean;
+  pinned: boolean;
 }
 
 export interface HistoryEntry {
@@ -102,6 +104,13 @@ const api = {
       ipcRenderer.invoke('chrome:set-toolbar-height', height),
     setSidePanelWidth: (width: number): Promise<void> =>
       ipcRenderer.invoke('chrome:set-side-panel-width', width),
+    pin: (id: string): Promise<void> => ipcRenderer.invoke('tabs:pin', id),
+    unpin: (id: string): Promise<void> => ipcRenderer.invoke('tabs:unpin', id),
+    reorder: (id: string, toIndex: number): Promise<void> =>
+      ipcRenderer.invoke('tabs:reorder', id, toIndex),
+    find: (id: string, text: string): Promise<void> =>
+      ipcRenderer.invoke('tabs:find', id, text),
+    findStop: (id: string): Promise<void> => ipcRenderer.invoke('tabs:find-stop', id),
     onUpdated: (cb: (tabs: TabInfo[]) => void) => onChannel('tabs:updated', cb),
   },
   history: {
@@ -154,6 +163,8 @@ const api = {
   },
   profile: {
     current: (): Promise<string> => ipcRenderer.invoke('profile:current'),
+    list: (): Promise<string[]> => ipcRenderer.invoke('profile:list'),
+    switch: (name: string): Promise<void> => ipcRenderer.invoke('profile:switch', name),
   },
   chrome: {
     listProfiles: (): Promise<string[]> => ipcRenderer.invoke('chrome:profiles'),
@@ -210,6 +221,7 @@ const api = {
   events: {
     onFocusAddressBar: (cb: () => void) => onChannel('focus:address-bar', cb),
     onToggleSidePanel: (cb: () => void) => onChannel('toggle:side-panel', cb),
+    onOpenFindBar: (cb: () => void) => onChannel('focus:find-bar', cb),
   },
 };
 
