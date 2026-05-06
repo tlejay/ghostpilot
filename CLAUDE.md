@@ -183,7 +183,4 @@ claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
 
 ## TODO / future
 
-- ปุ่มสลับ profile ใน UI (ตอนนี้ต้อง relaunch ด้วย env)
-- Find-in-page (Cmd+F)
-- Tab pinning / drag to reorder
-- Favicon ใน tab + bookmark list
+_(backlog เคลียร์แล้ว — ยังไม่มีรายการใหม่)_
