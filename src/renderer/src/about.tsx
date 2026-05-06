@@ -51,7 +51,7 @@ function About() {
 
         {info ? (
           <p className="about-meta">
-            Electron {info.electronVersion} · Chromium {info.chromeVersion} · Node{' '}
+            GhostPilot {info.version} · Chromium {info.chromeVersion} · Node{' '}
             {info.nodeVersion}
           </p>
         ) : null}
