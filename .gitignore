@@ -37,5 +37,12 @@ yarn.lock
 # kept tracked so the project ships with a usable agent skeleton.
 .claude/skills/*/
 
+# Claude Code runtime state (session-local locks for scheduled tasks etc.)
+.claude/scheduled_tasks.lock
+
 # Playwright
 test-results/
+
+# Personal Obsidian vault — notes, journals, and scripts that may contain PII.
+# Lives inside the project root for convenience but never ships with the repo.
+Obsidian/
