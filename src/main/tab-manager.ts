@@ -79,6 +79,68 @@ export class TabManager {
     this.window.on('leave-full-screen', () => this.layoutActive());
   }
 
+  // ── liveness guards ───────────────────────────────────────────────
+  // A tab can outlive its WebContents (crash / render-process-gone / external close)
+  // — `tab.view.webContents` then becomes undefined or destroyed. Touching `.getURL()`
+  // on it throws and (because listTabs/broadcastTabs run on every MCP call + every nav
+  // event) takes the whole TabManager down. So: everything that reaches a WebContents
+  // goes through `liveWc()`, and dead tabs are pruned out of the maps.
+  private isLive(tab?: InternalTab | null | undefined): tab is InternalTab {
+    const wc = tab?.view?.webContents;
+    return !!wc && !wc.isDestroyed();
+  }
+
+  private liveWc(id: string): WebContents | null {
+    const wc = this.tabs.get(id)?.view?.webContents;
+    return wc && !wc.isDestroyed() ? wc : null;
+  }
+
+  // Drop a tab whose WebContents is gone (does NOT touch the dead webContents).
+  private dropTab(id: string): void {
+    const tab = this.tabs.get(id);
+    if (!tab) return;
+    const wcId = tab.view?.webContents?.id;
+    if (typeof wcId === 'number') {
+      this.recorder.detach(id, wcId);
+      this.wcToTab.delete(wcId);
+    }
+    this.mediaDetector.detach(id);
+    try {
+      if (tab.view) this.window.contentView.removeChildView(tab.view);
+    } catch {
+      /* already detached */
+    }
+    this.tabs.delete(id);
+    this.favicons.delete(id);
+    this.order = this.order.filter((x) => x !== id);
+    if (this.activeId === id) {
+      this.activeId = null;
+      const next = [...this.order].reverse().find((x) => this.isLive(this.tabs.get(x))) ?? null;
+      if (next) this.activateTab(next);
+      else this.broadcastTabs();
+    } else {
+      this.broadcastTabs();
+    }
+  }
+
+  // Sweep out any dead tabs (lazy GC, called before listing).
+  private pruneDead(): void {
+    let removed = false;
+    for (const [id, tab] of [...this.tabs]) {
+      // read the wc id BEFORE the isLive() narrowing (which would make `tab` `never` in the dead branch)
+      const wcId = tab.view?.webContents?.id;
+      if (this.isLive(tab)) continue;
+      this.tabs.delete(id);
+      this.favicons.delete(id);
+      this.order = this.order.filter((x) => x !== id);
+      if (typeof wcId === 'number') this.wcToTab.delete(wcId);
+      removed = true;
+    }
+    if (removed && (this.activeId === null || !this.isLive(this.tabs.get(this.activeId ?? '')))) {
+      this.activeId = [...this.order].reverse().find((x) => this.isLive(this.tabs.get(x))) ?? null;
+    }
+  }
+
   newTab(rawUrl?: string): TabInfo {
     const view = new WebContentsView({
       webPreferences: {
@@ -132,36 +194,56 @@ export class TabManager {
       return { action: 'deny' };
     });
 
+    // Self-clean if the renderer crashes or the WebContents is destroyed out from under us,
+    // so a dead tab never lingers in the maps and poisons listTabs/broadcastTabs.
+    wc.on('render-process-gone', () => this.dropTab(id));
+    wc.on('destroyed', () => this.dropTab(id));
+
     wc.loadURL(url).catch((err) => console.error('[tab-manager] loadURL failed', err));
 
     this.activateTab(id);
-    return this.toInfo(tab);
+    return (
+      this.toInfo(tab) ?? {
+        id,
+        url,
+        title: '',
+        favicon: undefined,
+        loading: true,
+        canGoBack: false,
+        canGoForward: false,
+        active: this.activeId === id,
+        pinned: tab.pinned,
+      }
+    );
   }
 
   closeTab(id: string): void {
     const tab = this.tabs.get(id);
     if (!tab) return;
-    const wcId = tab.view.webContents.id;
+    const wcId = tab.view?.webContents?.id;
     try {
-      this.window.contentView.removeChildView(tab.view);
+      if (tab.view) this.window.contentView.removeChildView(tab.view);
     } catch {
       /* already detached */
     }
     try {
-      tab.view.webContents.close();
+      const wc = tab.view?.webContents;
+      if (wc && !wc.isDestroyed()) wc.close();
     } catch {
       /* noop */
     }
-    this.recorder.detach(id, wcId);
+    if (typeof wcId === 'number') {
+      this.recorder.detach(id, wcId);
+      this.wcToTab.delete(wcId);
+    }
     this.mediaDetector.detach(id);
-    this.wcToTab.delete(wcId);
     this.tabs.delete(id);
     this.favicons.delete(id);
     this.order = this.order.filter((x) => x !== id);
 
     if (this.activeId === id) {
-      const next = this.order[this.order.length - 1] ?? null;
       this.activeId = null;
+      const next = [...this.order].reverse().find((x) => this.isLive(this.tabs.get(x))) ?? this.order[this.order.length - 1] ?? null;
       if (next) this.activateTab(next);
       else this.broadcastTabs();
     } else {
@@ -171,10 +253,15 @@ export class TabManager {
 
   activateTab(id: string): void {
     const tab = this.tabs.get(id);
-    if (!tab) return;
+    if (!this.isLive(tab)) {
+      // requested tab is dead/missing — clean up and surface whatever's left instead of throwing
+      this.pruneDead();
+      this.broadcastTabs();
+      return;
+    }
 
     for (const [otherId, other] of this.tabs) {
-      if (otherId !== id) {
+      if (otherId !== id && other.view) {
         try {
           this.window.contentView.removeChildView(other.view);
         } catch {
@@ -183,43 +270,49 @@ export class TabManager {
       }
     }
 
-    this.window.contentView.addChildView(tab.view);
+    try {
+      this.window.contentView.addChildView(tab.view);
+    } catch (err) {
+      console.error('[tab-manager] addChildView failed', err);
+      this.dropTab(id);
+      return;
+    }
     this.activeId = id;
     this.layoutActive();
     this.broadcastTabs();
   }
 
   navigate(id: string, rawUrl: string): void {
-    this.tabs.get(id)?.view.webContents.loadURL(normalizeUrl(rawUrl));
+    this.liveWc(id)?.loadURL(normalizeUrl(rawUrl));
   }
 
   goBack(id: string): void {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (wc?.navigationHistory.canGoBack()) wc.navigationHistory.goBack();
   }
 
   goForward(id: string): void {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (wc?.navigationHistory.canGoForward()) wc.navigationHistory.goForward();
   }
 
   reload(id: string): void {
-    this.tabs.get(id)?.view.webContents.reload();
+    this.liveWc(id)?.reload();
   }
 
   stop(id: string): void {
-    this.tabs.get(id)?.view.webContents.stop();
+    this.liveWc(id)?.stop();
   }
 
   toggleDevTools(id: string): void {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (!wc) return;
     if (wc.isDevToolsOpened()) wc.closeDevTools();
     else wc.openDevTools({ mode: 'detach' });
   }
 
   pressKey(id: string, key: string, modifiers: string[] = []): boolean {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (!wc) return false;
     const mod = modifiers as Array<'shift' | 'control' | 'alt' | 'meta'>;
     wc.sendInputEvent({ type: 'keyDown', keyCode: key, modifiers: mod });
@@ -229,7 +322,7 @@ export class TabManager {
   }
 
   typeText(id: string, text: string): boolean {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (!wc) return false;
     for (const ch of text) {
       wc.sendInputEvent({ type: 'char', keyCode: ch });
@@ -241,8 +334,8 @@ export class TabManager {
   // and forwards an arbitrary CDP method call. Equivalent to chrome-devtools'
   // direct CDP access — anything chrome-devtools MCP can do, this can do.
   async cdpSend(id: string, method: string, params?: Record<string, unknown>): Promise<unknown> {
-    const wc = this.tabs.get(id)?.view.webContents;
-    if (!wc) throw new Error(`Tab not found: ${id}`);
+    const wc = this.liveWc(id);
+    if (!wc) throw new Error(`Tab not found or destroyed: ${id}`);
     if (!wc.debugger.isAttached()) {
       try {
         wc.debugger.attach('1.3');
@@ -256,8 +349,8 @@ export class TabManager {
   // Wait for a CDP event to fire (one-shot) and return its params. Used by
   // tracing: subscribe BEFORE the trigger is sent to avoid the race.
   async waitForCdpEvent<T = unknown>(id: string, eventName: string, timeoutMs = 30000): Promise<T> {
-    const wc = this.tabs.get(id)?.view.webContents;
-    if (!wc) throw new Error(`Tab not found: ${id}`);
+    const wc = this.liveWc(id);
+    if (!wc) throw new Error(`Tab not found or destroyed: ${id}`);
     if (!wc.debugger.isAttached()) wc.debugger.attach('1.3');
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -275,7 +368,7 @@ export class TabManager {
   }
 
   async hover(id: string, selector: string): Promise<boolean> {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (!wc) return false;
     const sel = JSON.stringify(selector);
     const rect = (await wc.executeJavaScript(
@@ -328,23 +421,28 @@ export class TabManager {
   }
 
   findInPage(id: string, text: string): void {
-    const wc = this.tabs.get(id)?.view.webContents;
+    const wc = this.liveWc(id);
     if (!wc || !text) return;
     wc.findInPage(text, { findNext: false });
   }
 
   stopFindInPage(id: string): void {
-    this.tabs.get(id)?.view.webContents.stopFindInPage('clearSelection');
+    this.liveWc(id)?.stopFindInPage('clearSelection');
   }
 
   listTabs(): TabInfo[] {
+    this.pruneDead();
     return this.order
       .map((id) => this.tabs.get(id))
-      .filter((t): t is InternalTab => Boolean(t))
-      .map((t) => this.toInfo(t));
+      .filter((t): t is InternalTab => this.isLive(t))
+      .map((t) => this.toInfo(t))
+      .filter((info): info is TabInfo => info !== null);
   }
 
   getActiveId(): string | null {
+    if (this.activeId && this.isLive(this.tabs.get(this.activeId))) return this.activeId;
+    // active tab died (or none was set) — fall back to the most recent live tab
+    this.activeId = [...this.order].reverse().find((x) => this.isLive(this.tabs.get(x))) ?? null;
     return this.activeId;
   }
 
@@ -357,14 +455,12 @@ export class TabManager {
   }
 
   getTabUrl(id: string): string {
-    const tab = this.tabs.get(id);
-    return tab?.view.webContents.getURL() ?? '';
+    return this.liveWc(id)?.getURL() ?? '';
   }
 
   async screenshot(id: string): Promise<Buffer | null> {
-    const tab = this.tabs.get(id);
-    if (!tab) return null;
-    const wc = tab.view.webContents;
+    const wc = this.liveWc(id);
+    if (!wc) return null;
 
     // Fast path — works when this tab is active and the window is on screen.
     try {
@@ -443,42 +539,44 @@ export class TabManager {
   }
 
   async evaluate(id: string, script: string): Promise<unknown> {
-    const tab = this.tabs.get(id);
-    if (!tab) return null;
-    return tab.view.webContents.executeJavaScript(script, true);
+    const wc = this.liveWc(id);
+    if (!wc) return null;
+    return wc.executeJavaScript(script, true);
   }
 
   async getPageText(id: string): Promise<string | null> {
-    const tab = this.tabs.get(id);
-    if (!tab) return null;
-    return tab.view.webContents.executeJavaScript(
-      'document.body ? document.body.innerText : ""',
-      true,
-    );
+    const wc = this.liveWc(id);
+    if (!wc) return null;
+    return wc.executeJavaScript('document.body ? document.body.innerText : ""', true);
   }
 
   async getPageHtml(id: string): Promise<string | null> {
-    const tab = this.tabs.get(id);
-    if (!tab) return null;
-    return tab.view.webContents.executeJavaScript(
+    const wc = this.liveWc(id);
+    if (!wc) return null;
+    return wc.executeJavaScript(
       'document.documentElement ? document.documentElement.outerHTML : ""',
       true,
     );
   }
 
-  private toInfo(tab: InternalTab): TabInfo {
-    const wc = tab.view.webContents;
-    return {
-      id: tab.id,
-      url: wc.getURL(),
-      title: wc.getTitle(),
-      favicon: this.favicons.get(tab.id),
-      loading: wc.isLoading(),
-      canGoBack: wc.navigationHistory.canGoBack(),
-      canGoForward: wc.navigationHistory.canGoForward(),
-      active: this.activeId === tab.id,
-      pinned: tab.pinned,
-    };
+  private toInfo(tab: InternalTab): TabInfo | null {
+    const wc = tab?.view?.webContents;
+    if (!wc || wc.isDestroyed()) return null;   // dead tab — caller filters this out
+    try {
+      return {
+        id: tab.id,
+        url: wc.getURL(),
+        title: wc.getTitle(),
+        favicon: this.favicons.get(tab.id),
+        loading: wc.isLoading(),
+        canGoBack: wc.navigationHistory.canGoBack(),
+        canGoForward: wc.navigationHistory.canGoForward(),
+        active: this.activeId === tab.id,
+        pinned: tab.pinned,
+      };
+    } catch {
+      return null;
+    }
   }
 
   setToolbarHeight(height: number): void {
@@ -503,14 +601,21 @@ export class TabManager {
   private layoutActive(): void {
     if (!this.activeId) return;
     const tab = this.tabs.get(this.activeId);
-    if (!tab) return;
+    if (!this.isLive(tab)) {
+      this.pruneDead();
+      return;
+    }
     const [width, height] = this.window.getContentSize();
-    tab.view.setBounds({
-      x: 0,
-      y: this.toolbarHeight,
-      width: Math.max(0, width - this.sidePanelWidth),
-      height: Math.max(0, height - this.toolbarHeight),
-    });
+    try {
+      tab.view.setBounds({
+        x: 0,
+        y: this.toolbarHeight,
+        width: Math.max(0, width - this.sidePanelWidth),
+        height: Math.max(0, height - this.toolbarHeight),
+      });
+    } catch (err) {
+      console.error('[tab-manager] setBounds failed', err);
+    }
   }
 
   private broadcastTabs(): void {
