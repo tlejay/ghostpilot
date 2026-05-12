@@ -1,4 +1,4 @@
-import { BrowserWindow, WebContentsView } from 'electron';
+import { BrowserWindow, WebContentsView, type WebContents } from 'electron';
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -85,6 +85,9 @@ export class TabManager {
         contextIsolation: true,
         sandbox: true,
         partition: this.partition,
+        // Keep the compositor producing frames while the tab is backgrounded
+        // (inactive tab / minimized window) so screenshots stay available.
+        backgroundThrottling: false,
       },
     });
     const id = randomUUID();
@@ -361,8 +364,82 @@ export class TabManager {
   async screenshot(id: string): Promise<Buffer | null> {
     const tab = this.tabs.get(id);
     if (!tab) return null;
-    const image = await tab.view.webContents.capturePage();
-    return image.toPNG();
+    const wc = tab.view.webContents;
+
+    // Fast path — works when this tab is active and the window is on screen.
+    try {
+      const image = await wc.capturePage();
+      if (!image.isEmpty()) return image.toPNG();
+    } catch {
+      /* "Current display surface not available" — fall through */
+    }
+
+    // CDP path — `Page.captureScreenshot` with `fromSurface: false` renders the
+    // page from the view rather than the OS compositor surface, so it works for
+    // hidden/minimized windows and for inactive (detached) tabs.
+    try {
+      const png = await this.captureViaCdp(wc);
+      if (png && png.length > 0) return png;
+    } catch (err) {
+      console.error('[tab-manager] CDP screenshot fallback failed', err);
+    }
+
+    // Last resort — briefly surface the window (and this tab), capture, restore.
+    return this.captureBySurfacing(id, wc);
+  }
+
+  private async captureViaCdp(wc: WebContents): Promise<Buffer | null> {
+    const dbg = wc.debugger;
+    let attachedHere = false;
+    if (!dbg.isAttached()) {
+      dbg.attach('1.3');
+      attachedHere = true;
+    }
+    try {
+      await dbg.sendCommand('Page.enable');
+      const { data } = (await dbg.sendCommand('Page.captureScreenshot', {
+        format: 'png',
+        fromSurface: false,
+        captureBeyondViewport: false,
+      })) as { data?: string };
+      return data ? Buffer.from(data, 'base64') : null;
+    } finally {
+      if (attachedHere) {
+        try {
+          dbg.detach();
+        } catch {
+          /* noop */
+        }
+      }
+    }
+  }
+
+  private async captureBySurfacing(id: string, wc: WebContents): Promise<Buffer | null> {
+    const win = this.window;
+    const wasMinimized = win.isMinimized();
+    const wasVisible = win.isVisible();
+    const prevActive = this.activeId;
+    try {
+      if (wasMinimized) win.restore();
+      else if (!wasVisible) win.showInactive();
+      if (prevActive !== id) this.activateTab(id);
+      await new Promise((r) => setTimeout(r, 300));
+      const image = await wc.capturePage();
+      return image.isEmpty() ? null : image.toPNG();
+    } catch (err) {
+      console.error('[tab-manager] surfacing screenshot fallback failed', err);
+      return null;
+    } finally {
+      if (prevActive && prevActive !== id) {
+        try {
+          this.activateTab(prevActive);
+        } catch {
+          /* noop */
+        }
+      }
+      if (wasMinimized) win.minimize();
+      else if (!wasVisible) win.hide();
+    }
   }
 
   async evaluate(id: string, script: string): Promise<unknown> {

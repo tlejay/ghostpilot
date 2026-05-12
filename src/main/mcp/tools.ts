@@ -724,17 +724,81 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     'upload_file',
     {
       description:
-        'Set the files of an <input type="file"> element via DOM.setFileInputFiles. Pass absolute filesystem paths.',
+        'Attach file(s) to the page. Pass absolute filesystem paths in `files`.\n' +
+        '• `selector` — set the files directly on an existing `<input type="file">` that matches it (DOM.setFileInputFiles).\n' +
+        '• `clickSelector` — for buttons that open the OS file picker (e.g. a "Choose file" link, or Facebook\'s 📷 ' +
+        '"แนบรูปภาพหรือวิดีโอ" / "Attach a photo or video" comment button): GhostPilot arms a CDP file-chooser ' +
+        'interception, clicks that element (with a user gesture), and feeds the files when the picker opens — no ' +
+        'native dialog ever appears. Use this when a plain `selector` upload triggers the wrong composer or hits a ' +
+        'native dialog GhostPilot cannot fill.\n' +
+        'Provide exactly one of `selector` / `clickSelector`.',
       inputSchema: {
-        selector: z.string(),
         files: z.array(z.string()).min(1),
+        selector: z.string().optional(),
+        clickSelector: z.string().optional(),
+        timeoutMs: z.number().int().positive().optional(),
         tabId: z.string().optional(),
       },
     },
-    async ({ selector, files, tabId }) => {
+    async ({ selector, clickSelector, files, timeoutMs, tabId }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
-      // Get the DOM nodeId for the selector
+
+      // ── file-chooser interception path (Playwright-style) ──────────────
+      // Some pages (Facebook comment photo button, many "Choose file" labels) call
+      // `input.click()` which opens the OS picker — GhostPilot can't fill that.
+      // Solution: turn on Page.setInterceptFileChooserDialog, click the trigger,
+      // catch Page.fileChooserOpened (gives the input's backendNodeId), then feed
+      // the files via DOM.setFileInputFiles({backendNodeId}). That both sets the
+      // files and cancels the native dialog.
+      if (clickSelector) {
+        await tabManager.cdpSend(id, 'Page.enable', {});
+        await tabManager.cdpSend(id, 'DOM.enable', {});
+        await tabManager.cdpSend(id, 'Page.setInterceptFileChooserDialog', { enabled: true });
+        try {
+          // Subscribe BEFORE the click to avoid the race.
+          const eventP = tabManager.waitForCdpEvent<{
+            backendNodeId?: number;
+            mode?: string;
+            frameId?: string;
+          }>(id, 'Page.fileChooserOpened', timeoutMs ?? 15000);
+          // Click the trigger element. evaluate() runs with userGesture=true, so the
+          // page's `input.click()` is allowed to open a chooser.
+          const clickRes = (await tabManager.evaluate(
+            id,
+            `(() => { const el = document.querySelector(${JSON.stringify(clickSelector)});
+              if (!el) return { ok:false, error:'clickSelector not found' };
+              el.scrollIntoView({ block:'center' });
+              el.click();
+              return { ok:true }; })()`,
+          )) as { ok: boolean; error?: string } | null;
+          if (!clickRes || !clickRes.ok) {
+            return text({ ok: false, error: clickRes?.error ?? 'clickSelector not found' });
+          }
+          const ev = await eventP;
+          if (ev?.backendNodeId == null) {
+            return text({ ok: false, error: 'fileChooserOpened fired without a backendNodeId' });
+          }
+          await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
+            files,
+            backendNodeId: ev.backendNodeId,
+          });
+          return text({ ok: true, files, via: 'fileChooser', mode: ev.mode });
+        } catch (err) {
+          return text({ ok: false, error: `fileChooser path failed: ${(err as Error).message}` });
+        } finally {
+          try {
+            await tabManager.cdpSend(id, 'Page.setInterceptFileChooserDialog', { enabled: false });
+          } catch {
+            /* noop */
+          }
+        }
+      }
+
+      // ── direct-input path (original behaviour) ────────────────────────
+      if (!selector) {
+        return text({ ok: false, error: 'provide either `selector` or `clickSelector`' });
+      }
       const doc = (await tabManager.cdpSend(id, 'DOM.getDocument', {})) as {
         root: { nodeId: number };
       };
@@ -749,7 +813,7 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         files,
         nodeId: found.nodeId,
       });
-      return text({ ok: true, files });
+      return text({ ok: true, files, via: 'directInput' });
     },
   );
 
