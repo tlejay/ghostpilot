@@ -110,8 +110,56 @@ GhostPilot is at full parity for the surfaces an LLM agent actually uses:
 | `AI_BROWSER_UPDATE_URL` | GitHub releases | Manifest URL for update checks. JSON shape: `{ "version": "0.3.0", "url": "...", "notes": "..." }`. Default uses the GitHub releases API. |
 | `AI_BROWSER_UPDATE_NAG` | `on` | Set to `off` to silence the update banner injected into MCP responses. |
 | `AI_BROWSER_DEBUG_PORT` | `9224` | Remote debugging port exposed to Lighthouse and any external CDP client. |
+| `GHOSTPILOT_TOOLS` | _unset_ (= `all`) | Comma-separated list of tool categories to expose. Trims the MCP `tools/list` payload so clients with smaller context windows aren't billed for tools they'll never call. See [Trimming the tool inventory](#trimming-the-tool-inventory) below. |
 
 The MCP server binds to `127.0.0.1` only — no external access.
+
+### Trimming the tool inventory
+
+GhostPilot exposes ~57 MCP tools by default. Clients that only need a slice (a scraping bot, a download-only helper, a screenshot harness) can opt into specific categories via `GHOSTPILOT_TOOLS`:
+
+```bash
+# Mint's default profile — page navigation + interaction + inspection (= 22 tools).
+GHOSTPILOT_TOOLS=core pnpm dev
+
+# Explicit category list (case-insensitive, whitespace tolerant).
+GHOSTPILOT_TOOLS=nav,interact,inspect,network pnpm dev
+
+# All except yt-dlp and lighthouse.
+GHOSTPILOT_TOOLS=all,-ytdlp,-performance pnpm dev
+```
+
+Tokens recognised in the env value:
+
+- bare category name → enable that category
+- `-name` → subtract that category
+- `all` → every category (the default when the var is unset)
+- `core` → shorthand for `nav,tabs,interact,inspect`
+- unknown name → logged as a `WARN`, ignored
+
+The `lifecycle` group (`stop`, `check_for_updates`, `tool_categories`) is always on regardless of the env var, so the operator can introspect or shut down the server.
+
+| Category | Tools |
+|---|---|
+| `nav` | `navigate`, `go_back`, `go_forward`, `reload` |
+| `tabs` | `list_tabs`, `new_tab`, `close_tab`, `activate_tab` |
+| `interact` | `click`, `fill`, `type_text`, `press_key`, `hover`, `upload_file`, `handle_next_dialog` |
+| `inspect` | `screenshot`, `get_page_text`, `get_page_html`, `a11y_snapshot`, `evaluate`, `wait_for_selector`, `wait_for_text` |
+| `network` | `list_network_requests`, `clear_network_requests` |
+| `console` | `list_console_messages`, `clear_console_messages` |
+| `performance` | `performance_start_trace`, `performance_stop_trace`, `lighthouse_audit` |
+| `media` | `list_media`, `download_media`, `clear_media` |
+| `ytdlp` | `download_with_ytdlp`, `list_ytdlp_jobs`, `ytdlp_status` |
+| `downloads` | `downloads_list`, `downloads_cancel`, `downloads_clear`, `downloads_reveal` |
+| `history` | `history_list`, `history_clear`, `import_chrome_history` |
+| `bookmarks` | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove`, `import_chrome_bookmarks` |
+| `emulate` | `emulate`, `clear_emulation`, `toggle_devtools` |
+| `profiles` | `list_chrome_profiles` |
+| `skills` | `list_skills`, `save_skill`, `get_skill`, `delete_skill` |
+| `cdp` | `cdp_send` (raw Chrome DevTools Protocol passthrough) |
+| `lifecycle` | `stop`, `check_for_updates`, `tool_categories` (always on) |
+
+Call `tool_categories` at any time to see what's enabled in the current process and how many tools that translates to. Selection is resolved once at startup — restart the MCP server to apply a new env value.
 
 ### Switching profiles
 
