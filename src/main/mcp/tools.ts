@@ -1,5 +1,10 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import {
+  ALL_CATEGORIES,
+  sortCategories,
+  type ToolCategory,
+} from './tool-groups.js';
 import type { TabManager } from '../tab-manager.js';
 import type { HistoryStore } from '../storage/history.js';
 import type { BookmarksStore } from '../storage/bookmarks.js';
@@ -35,7 +40,24 @@ const text = (value: unknown) => ({
   ],
 });
 
-export function registerTools(server: McpServer, deps: ToolDeps): void {
+/**
+ * Summary of what got registered — returned by registerTools(), surfaced by
+ * the introspection tool and the server startup log.
+ */
+export interface RegistrationStats {
+  enabledCategories: ToolCategory[];
+  /** Categories declared in code (may differ from enabledCategories when
+   *  GHOSTPILOT_TOOLS is set). */
+  availableCategories: ToolCategory[];
+  enabledToolsCount: number;
+  totalToolsCount: number;
+}
+
+export function registerTools(
+  server: McpServer,
+  deps: ToolDeps,
+  enabled: Set<ToolCategory> = new Set<ToolCategory>(ALL_CATEGORIES),
+): RegistrationStats {
   const {
     tabManager,
     history,
@@ -48,6 +70,19 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     ytdlp,
     updateChecker,
   } = deps;
+
+  // Gate every server.registerTool() call behind a category check. Using a
+  // thunk so each call site keeps direct access to server.registerTool's
+  // generic inference (the wrapped form needs the SDK's full ZodRawShapeCompat
+  // generics, which is awkward to forward through a wrapper).
+  let enabledCount = 0;
+  let totalCount = 0;
+  const tool = (category: ToolCategory, register: () => unknown): void => {
+    totalCount += 1;
+    if (!enabled.has(category)) return;
+    register();
+    enabledCount += 1;
+  };
 
   const requireTab = (tabId: string) => {
     const tab = tabManager.getTab(tabId);
@@ -63,44 +98,53 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   };
 
   // ── Tabs ──────────────────────────────────────────────────────────
-  server.registerTool(
-    'list_tabs',
+  tool('tabs', () =>
+    server.registerTool(
+      'list_tabs',
     {
       description: 'List every open browser tab with id, url, title, loading state, and active flag.',
       inputSchema: {},
     },
     async () => text(tabManager.listTabs()),
+    ),
   );
 
-  server.registerTool(
-    'new_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'new_tab',
     {
       description: 'Open a new tab. URL accepts schemes, bare hostnames, or search queries (Google).',
       inputSchema: { url: z.string().optional() },
     },
     async ({ url }) => text(tabManager.newTab(url)),
+    ),
   );
 
-  server.registerTool(
-    'close_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'close_tab',
     { description: 'Close a tab by id.', inputSchema: { tabId: z.string() } },
     async ({ tabId }) => {
       tabManager.closeTab(tabId);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'activate_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'activate_tab',
     { description: 'Bring a tab to the foreground.', inputSchema: { tabId: z.string() } },
     async ({ tabId }) => {
       tabManager.activateTab(tabId);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'navigate',
+  tool('nav', () =>
+    server.registerTool(
+      'navigate',
     {
       description: 'Navigate the given tab (or active tab) to a URL.',
       inputSchema: { url: z.string(), tabId: z.string().optional() },
@@ -110,46 +154,56 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       tabManager.navigate(id, url);
       return text({ ok: true, tabId: id });
     },
+    ),
   );
 
-  server.registerTool(
-    'go_back',
+  tool('nav', () =>
+    server.registerTool(
+      'go_back',
     { description: 'Navigate back.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.goBack(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'go_forward',
+  tool('nav', () =>
+    server.registerTool(
+      'go_forward',
     { description: 'Navigate forward.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.goForward(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'reload',
+  tool('nav', () =>
+    server.registerTool(
+      'reload',
     { description: 'Reload the page.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.reload(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'stop',
+  tool('lifecycle', () =>
+    server.registerTool(
+      'stop',
     { description: 'Stop loading.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.stop(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'toggle_devtools',
+  tool('emulate', () =>
+    server.registerTool(
+      'toggle_devtools',
     {
       description: 'Open or close DevTools for the given tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -158,11 +212,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       tabManager.toggleDevTools(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Page content ──────────────────────────────────────────────────
-  server.registerTool(
-    'get_page_text',
+  tool('inspect', () =>
+    server.registerTool(
+      'get_page_text',
     {
       description: 'Return rendered innerText of the page body.',
       inputSchema: { tabId: z.string().optional() },
@@ -172,10 +228,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.getPageText(id)) ?? '');
     },
+    ),
   );
 
-  server.registerTool(
-    'get_page_html',
+  tool('inspect', () =>
+    server.registerTool(
+      'get_page_html',
     {
       description: 'Return outerHTML of the document.',
       inputSchema: { tabId: z.string().optional() },
@@ -185,10 +243,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.getPageHtml(id)) ?? '');
     },
+    ),
   );
 
-  server.registerTool(
-    'screenshot',
+  tool('inspect', () =>
+    server.registerTool(
+      'screenshot',
     {
       description: 'PNG screenshot of the tab as base64.',
       inputSchema: { tabId: z.string().optional() },
@@ -204,10 +264,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         ],
       };
     },
+    ),
   );
 
-  server.registerTool(
-    'evaluate',
+  tool('inspect', () =>
+    server.registerTool(
+      'evaluate',
     {
       description:
         'Run JavaScript in the page context and return the result. Use a single expression or IIFE returning a JSON-serializable value.',
@@ -218,10 +280,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.evaluate(id, script)) ?? null);
     },
+    ),
   );
 
-  server.registerTool(
-    'click',
+  tool('interact', () =>
+    server.registerTool(
+      'click',
     {
       description: 'Click the first element matching the CSS selector.',
       inputSchema: { selector: z.string(), tabId: z.string().optional() },
@@ -236,10 +300,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'fill',
+  tool('interact', () =>
+    server.registerTool(
+      'fill',
     {
       description: 'Set value on input/textarea matching selector and dispatch input + change events.',
       inputSchema: {
@@ -267,10 +333,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'wait_for_selector',
+  tool('inspect', () =>
+    server.registerTool(
+      'wait_for_selector',
     {
       description: 'Wait until selector exists in the DOM (default timeout 10000ms).',
       inputSchema: {
@@ -298,11 +366,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
   // ── History ───────────────────────────────────────────────────────
-  server.registerTool(
-    'history_list',
+  tool('history', () =>
+    server.registerTool(
+      'history_list',
     {
       description: 'Return browser history. Optional case-insensitive substring match against url/title.',
       inputSchema: {
@@ -311,29 +381,35 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ limit, query }) => text(await history.list(limit ?? 100, query)),
+    ),
   );
 
-  server.registerTool(
-    'history_clear',
+  tool('history', () =>
+    server.registerTool(
+      'history_clear',
     { description: 'Clear all browser history for this profile.', inputSchema: {} },
     async () => {
       await history.clear();
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Bookmarks ─────────────────────────────────────────────────────
-  server.registerTool(
-    'bookmarks_list',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_list',
     {
       description: 'List bookmarks. Optional case-insensitive substring match.',
       inputSchema: { query: z.string().optional() },
     },
     async ({ query }) => text(await bookmarks.list(query)),
+    ),
   );
 
-  server.registerTool(
-    'bookmarks_add',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_add',
     {
       description: 'Bookmark a URL with title and optional folder.',
       inputSchema: {
@@ -343,10 +419,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ url, title, folder }) => text(await bookmarks.add({ url, title, folder })),
+    ),
   );
 
-  server.registerTool(
-    'bookmarks_remove',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_remove',
     {
       description: 'Remove a bookmark by id.',
       inputSchema: { id: z.string() },
@@ -355,38 +433,46 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await bookmarks.remove(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Downloads ─────────────────────────────────────────────────────
-  server.registerTool(
-    'downloads_list',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_list',
     {
       description: 'List downloads, newest first.',
       inputSchema: { limit: z.number().int().positive().max(500).optional() },
     },
     async ({ limit }) => text(await downloads.list(limit ?? 100)),
+    ),
   );
 
-  server.registerTool(
-    'downloads_cancel',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_cancel',
     {
       description: 'Cancel an in-progress download by id.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await downloads.cancel(id) }),
+    ),
   );
 
-  server.registerTool(
-    'downloads_reveal',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_reveal',
     {
       description: 'Reveal a completed download in Finder.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await downloads.revealInFinder(id) }),
+    ),
   );
 
-  server.registerTool(
-    'downloads_clear',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_clear',
     {
       description: 'Clear finished downloads from the list (in-flight downloads are kept).',
       inputSchema: {},
@@ -395,11 +481,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await downloads.clear();
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Input (low-level) ─────────────────────────────────────────────
-  server.registerTool(
-    'press_key',
+  tool('interact', () =>
+    server.registerTool(
+      'press_key',
     {
       description:
         'Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown", or "a"). Optional modifiers: shift/control/alt/meta.',
@@ -414,10 +502,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const ok = tabManager.pressKey(id, key, modifiers);
       return text({ ok });
     },
+    ),
   );
 
-  server.registerTool(
-    'type_text',
+  tool('interact', () =>
+    server.registerTool(
+      'type_text',
     {
       description:
         'Type a literal string into whichever element currently has focus (call `click` or `fill` first to focus an input).',
@@ -428,10 +518,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const ok = tabManager.typeText(id, input);
       return text({ ok });
     },
+    ),
   );
 
-  server.registerTool(
-    'hover',
+  tool('interact', () =>
+    server.registerTool(
+      'hover',
     {
       description: 'Move the mouse pointer to the centre of the element matching the selector.',
       inputSchema: { selector: z.string(), tabId: z.string().optional() },
@@ -441,11 +533,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const ok = await tabManager.hover(id, selector);
       return text({ ok });
     },
+    ),
   );
 
   // ── Console ───────────────────────────────────────────────────────
-  server.registerTool(
-    'list_console_messages',
+  tool('console', () =>
+    server.registerTool(
+      'list_console_messages',
     {
       description:
         'Return console messages captured for the tab (rolling buffer of 200). Optional level filter: info, warning, error, debug.',
@@ -459,10 +553,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text(recorder.getConsole(id, level));
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_console_messages',
+  tool('console', () =>
+    server.registerTool(
+      'clear_console_messages',
     {
       description: 'Clear the captured console buffer for the tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -473,11 +569,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       recorder.clearConsole(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Network ───────────────────────────────────────────────────────
-  server.registerTool(
-    'list_network_requests',
+  tool('network', () =>
+    server.registerTool(
+      'list_network_requests',
     {
       description:
         'Return network requests captured for the tab (rolling buffer of 500). Optional filters: method (GET/POST/...), status, urlIncludes (substring match).',
@@ -493,10 +591,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text(recorder.getNetwork(id, { method, status, urlIncludes }));
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_network_requests',
+  tool('network', () =>
+    server.registerTool(
+      'clear_network_requests',
     {
       description: 'Clear the captured network buffer for the tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -507,11 +607,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       recorder.clearNetwork(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Raw CDP escape hatch ──────────────────────────────────────────
-  server.registerTool(
-    'cdp_send',
+  tool('cdp', () =>
+    server.registerTool(
+      'cdp_send',
     {
       description:
         'Forward a raw Chrome DevTools Protocol command to the tab. Anything chrome-devtools MCP can do (Network.*, DOM.*, Page.*, Performance.*, Accessibility.*, Emulation.*, …) is accessible here. See https://chromedevtools.github.io/devtools-protocol/.',
@@ -526,30 +628,36 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const result = await tabManager.cdpSend(id, method, params);
       return text(result ?? null);
     },
+    ),
   );
 
   // ── Chrome import ─────────────────────────────────────────────────
-  server.registerTool(
-    'list_chrome_profiles',
+  tool('profiles', () =>
+    server.registerTool(
+      'list_chrome_profiles',
     {
       description: 'List available Google Chrome profile directories on this Mac (Default, Profile 1, …).',
       inputSchema: {},
     },
     async () => text(await findChromeProfiles()),
+    ),
   );
 
-  server.registerTool(
-    'import_chrome_bookmarks',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'import_chrome_bookmarks',
     {
       description:
         'Import bookmarks from Google Chrome. Default profile is "Default". URLs already bookmarked in GhostPilot are skipped.',
       inputSchema: { profile: z.string().optional() },
     },
     async ({ profile }) => text(await importBookmarks(bookmarks, profile)),
+    ),
   );
 
-  server.registerTool(
-    'import_chrome_history',
+  tool('history', () =>
+    server.registerTool(
+      'import_chrome_history',
     {
       description:
         'Import history from Google Chrome. Chrome should be closed (we copy the locked DB to /tmp first either way). Default limit 5000 most-recent visits.',
@@ -559,11 +667,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ profile, limit }) => text(await importHistory(history, { profile, limit })),
+    ),
   );
 
   // ── chrome-devtools parity wrappers ───────────────────────────────
-  server.registerTool(
-    'a11y_snapshot',
+  tool('inspect', () =>
+    server.registerTool(
+      'a11y_snapshot',
     {
       description:
         'Return a simplified accessibility tree for the page (role, name, value, focusable). Equivalent to chrome-devtools take_snapshot — useful for letting an LLM navigate by semantic role instead of CSS selectors.',
@@ -599,10 +709,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         }));
       return text({ count: slim.length, nodes: slim });
     },
+    ),
   );
 
-  server.registerTool(
-    'emulate',
+  tool('emulate', () =>
+    server.registerTool(
+      'emulate',
     {
       description:
         'Apply device / network emulation overrides to the tab. Pass any subset: width+height (with optional deviceScaleFactor and mobile), userAgent, offline, downloadKbps + uploadKbps + latencyMs.',
@@ -660,10 +772,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       }
       return text({ ok: true, applied: out });
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_emulation',
+  tool('emulate', () =>
+    server.registerTool(
+      'clear_emulation',
     {
       description: 'Clear all emulation overrides (metrics, user-agent, network conditions).',
       inputSchema: { tabId: z.string().optional() },
@@ -685,10 +799,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       ]);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'wait_for_text',
+  tool('inspect', () =>
+    server.registerTool(
+      'wait_for_text',
     {
       description:
         'Wait until the given text appears anywhere in document.body.innerText (default timeout 10000ms).',
@@ -718,10 +834,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'upload_file',
+  tool('interact', () =>
+    server.registerTool(
+      'upload_file',
     {
       description:
         'Attach file(s) to the page. Pass absolute filesystem paths in `files`.\n' +
@@ -815,10 +933,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true, files, via: 'directInput' });
     },
+    ),
   );
 
-  server.registerTool(
-    'handle_next_dialog',
+  tool('interact', () =>
+    server.registerTool(
+      'handle_next_dialog',
     {
       description:
         'Auto-respond to the next native JavaScript dialog (alert / confirm / prompt / beforeunload). Default behaviour is "accept". Use "dismiss" to cancel. promptText is sent to prompt() dialogs.',
@@ -844,11 +964,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true, type: opening.type, message: opening.message });
     },
+    ),
   );
 
   // ── Performance trace + Lighthouse ────────────────────────────────
-  server.registerTool(
-    'performance_start_trace',
+  tool('performance', () =>
+    server.registerTool(
+      'performance_start_trace',
     {
       description:
         'Start a Chrome DevTools performance trace on the tab. Pair with performance_stop_trace to receive the trace JSON path.',
@@ -866,10 +988,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'performance_stop_trace',
+  tool('performance', () =>
+    server.registerTool(
+      'performance_stop_trace',
     {
       description:
         'Stop a tracing session started by performance_start_trace. Reads the resulting trace stream and writes it to a JSON file in /tmp; returns the file path you can open in chrome://tracing or DevTools → Performance.',
@@ -903,10 +1027,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await fs.writeFile(path, chunks);
       return text({ ok: true, path, sizeBytes: Buffer.byteLength(chunks) });
     },
+    ),
   );
 
-  server.registerTool(
-    'lighthouse_audit',
+  tool('performance', () =>
+    server.registerTool(
+      'lighthouse_audit',
     {
       description:
         'Run a Lighthouse audit against the given URL (or the active tab\'s URL). Spawns a private headless Chrome via chrome-launcher — Google Chrome must be installed. Returns category scores plus the path to the full HTML report.',
@@ -985,11 +1111,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         await chrome.kill().catch(() => {});
       }
     },
+    ),
   );
 
   // ── Media (downloadable videos / audios on the page) ──────────────
-  server.registerTool(
-    'list_media',
+  tool('media', () =>
+    server.registerTool(
+      'list_media',
     {
       description:
         'List downloadable media (video/audio/HLS playlist/DASH manifest) detected on the active tab — populated by network sniffing every response of the partition\'s session. HLS .m3u8 / DASH .mpd are playlists; segments need ffmpeg or yt-dlp to merge.',
@@ -1000,10 +1128,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text(mediaDetector.list(id));
     },
+    ),
   );
 
-  server.registerTool(
-    'download_media',
+  tool('media', () =>
+    server.registerTool(
+      'download_media',
     {
       description:
         "Download a media URL detected by list_media. Replays the request via the tab's session so cookies/headers match. The file shows up in Downloads.",
@@ -1013,10 +1143,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       mediaDetector.download(partitionSession, url);
       return text({ ok: true, url });
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_media',
+  tool('media', () =>
+    server.registerTool(
+      'clear_media',
     {
       description: 'Clear the media-detection list for the active tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -1027,21 +1159,25 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       mediaDetector.clear(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── yt-dlp (HLS, DASH, YouTube, ~1500 sites) ──────────────────────
-  server.registerTool(
-    'ytdlp_status',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'ytdlp_status',
     {
       description:
         "Report whether yt-dlp is installed on this Mac and its version. yt-dlp handles HLS playlists, DASH manifests, and embedded videos from sites with anti-bot or DRM (YouTube, Twitter/X, Vimeo, ~1500 sites). Install with `brew install yt-dlp`.",
       inputSchema: { force: z.boolean().optional() },
     },
     async ({ force }) => text(await detectYtdlp(force ?? false)),
+    ),
   );
 
-  server.registerTool(
-    'download_with_ytdlp',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'download_with_ytdlp',
     {
       description:
         'Download a video/audio with yt-dlp. URL can be a direct media file, an HLS .m3u8, a DASH .mpd, OR a page URL (YouTube/Twitter/Vimeo/...). Returns immediately; progress is reported via the GhostPilot UI. Saves to ~/Downloads by default.',
@@ -1064,15 +1200,18 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true, message: 'Download started — see the Media panel for progress.' });
     },
+    ),
   );
 
-  server.registerTool(
-    'list_ytdlp_jobs',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'list_ytdlp_jobs',
     {
       description: 'List in-progress and recent yt-dlp downloads.',
       inputSchema: {},
     },
     async () => text(ytdlp.list()),
+    ),
   );
 
   // ── Skills (reusable browser automation playbooks) ────────────────
@@ -1083,8 +1222,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   //   2. If a skill matches, get_skill and follow it.
   //   3. After a successful task without a matching skill, save_skill so the
   //      next run is fast.
-  server.registerTool(
-    'list_skills',
+  tool('skills', () =>
+    server.registerTool(
+      'list_skills',
     {
       description:
         'List saved browser-automation skills (no body). **Call this first when starting any non-trivial browser task** — if a skill matches the target site/action, fetch it with get_skill and follow its steps instead of improvising. Filter by domain (e.g. "facebook.com") or free-text query.',
@@ -1094,10 +1234,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ domain, query }) => text(await skills.list({ domain, query })),
+    ),
   );
 
-  server.registerTool(
-    'get_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'get_skill',
     {
       description:
         'Fetch the full markdown body of a skill (steps, selectors, pitfalls). Records that the skill was used so most-used skills float to the top of list_skills.',
@@ -1109,10 +1251,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await skills.recordUse(id);
       return text(skill);
     },
+    ),
   );
 
-  server.registerTool(
-    'save_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'save_skill',
     {
       description:
         'Save (or update) a reusable skill. **After completing any non-trivial browser task without a matching skill, call this** with what you did — exact selectors, key steps, pitfalls — so future runs short-circuit. id is a slug like "facebook-search-friend"; if omitted, derived from name. body is markdown.',
@@ -1126,20 +1270,24 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async (input) => text(await skills.save(input)),
+    ),
   );
 
-  server.registerTool(
-    'delete_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'delete_skill',
     {
       description: 'Remove a skill by id. Use only when the skill is broken or obsolete.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await skills.delete(id) }),
+    ),
   );
 
   // ── Updates ───────────────────────────────────────────────────────
-  server.registerTool(
-    'check_for_updates',
+  tool('lifecycle', () =>
+    server.registerTool(
+      'check_for_updates',
     {
       description:
         'Check whether a newer GhostPilot release is available. Returns current version, latest version, and the upgrade URL.',
@@ -1149,5 +1297,35 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await updateChecker.checkNow(force ?? false);
       return text(updateChecker.status());
     },
+    ),
   );
+
+  // ── Introspection ─────────────────────────────────────────────────
+  // Always-on lifecycle tool so operators (and the LLM) can see what got
+  // included and what got filtered without grepping the codebase or
+  // restarting with different env vars.
+  tool('lifecycle', () =>
+    server.registerTool(
+      'tool_categories',
+    {
+      description:
+        'Report which tool categories are enabled in this GhostPilot session and how many tools that translates to. Useful for debugging an unexpectedly-small tool inventory caused by the GHOSTPILOT_TOOLS env var.',
+      inputSchema: {},
+    },
+    async () =>
+      text({
+        enabled_categories: sortCategories(enabled),
+        available_categories: [...ALL_CATEGORIES],
+        enabled_tools_count: enabledCount,
+        total_tools_count: totalCount,
+      }),
+    ),
+  );
+
+  return {
+    enabledCategories: sortCategories(enabled),
+    availableCategories: [...ALL_CATEGORIES],
+    enabledToolsCount: enabledCount,
+    totalToolsCount: totalCount,
+  };
 }
