@@ -15,6 +15,11 @@ app.setName('GhostPilot');
 const debugPort = Number(process.env.AI_BROWSER_DEBUG_PORT ?? 9224);
 app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
 
+import {
+  attachBoundsPersistence,
+  loadSavedBounds,
+  type SavedBounds,
+} from './window-bounds.js';
 import { TabManager } from './tab-manager.js';
 import { HistoryStore } from './storage/history.js';
 import { BookmarksStore } from './storage/bookmarks.js';
@@ -58,10 +63,12 @@ interface AppContext {
 
 let ctx: AppContext | null = null;
 
-function createMainWindow(): BrowserWindow {
+function createMainWindow(saved: SavedBounds | null): BrowserWindow {
   const win = new BrowserWindow({
-    width: 1400,
-    height: 900,
+    x: saved?.x,
+    y: saved?.y,
+    width: saved?.width ?? 1400,
+    height: saved?.height ?? 900,
     minWidth: 800,
     minHeight: 500,
     titleBarStyle: 'hiddenInset',
@@ -75,6 +82,7 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
+  attachBoundsPersistence(win);
   win.once('ready-to-show', () => win.show());
 
   win.webContents.setWindowOpenHandler(({ url }) => {
@@ -275,7 +283,8 @@ app.whenReady().then(async () => {
   const profile = getActiveProfile();
   const partition = partitionFor(profile);
 
-  const window = createMainWindow();
+  const savedBounds = await loadSavedBounds();
+  const window = createMainWindow(savedBounds);
   const history = new HistoryStore(profile);
   const bookmarks = new BookmarksStore(profile);
   const skills = new SkillsStore(profile);
@@ -348,6 +357,7 @@ app.whenReady().then(async () => {
     partitionSession: ses,
     ytdlp,
     updateChecker,
+    mainWindow: window,
   });
   const authMode = oauthPassword
     ? token
@@ -360,9 +370,10 @@ app.whenReady().then(async () => {
     `[GhostPilot] profile="${profile}" — MCP on http://127.0.0.1:${port}/mcp (auth: ${authMode})`,
   );
 
-  app.on('activate', () => {
+  app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      const win = createMainWindow();
+      const reopenedBounds = await loadSavedBounds();
+      const win = createMainWindow(reopenedBounds);
       const rec = new Recorder();
       const s = session.fromPartition(partition);
       rec.attachNetwork(s);

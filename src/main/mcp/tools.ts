@@ -10,6 +10,8 @@ import {
   type ToolCategory,
 } from './tool-groups.js';
 import { withRetry, waitStable, isTransientError, type Box } from './auto-retry.js';
+import { saveBounds as saveWindowBounds } from '../window-bounds.js';
+import type { BrowserWindow } from 'electron';
 import type { TabManager } from '../tab-manager.js';
 import type { HistoryStore } from '../storage/history.js';
 import type { BookmarksStore } from '../storage/bookmarks.js';
@@ -34,6 +36,9 @@ export interface ToolDeps {
   partitionSession: Session;
   ytdlp: YtdlpManager;
   updateChecker: UpdateChecker;
+  /** The main app BrowserWindow — used by desktop-category tools that
+   *  resize/move/inspect the chrome around the tabs. */
+  mainWindow: BrowserWindow;
 }
 
 const text = (value: unknown) => ({
@@ -189,6 +194,7 @@ export function registerTools(
     partitionSession,
     ytdlp,
     updateChecker,
+    mainWindow,
   } = deps;
 
   // Gate every server.registerTool() call behind a category check. Using a
@@ -1587,9 +1593,10 @@ export function registerTools(
   );
 
   // ── Desktop / System ──────────────────────────────────────────────
-  // System-level captures that look outside the browser tab. Currently just
-  // desktop_screenshot; future additions (window list, clipboard, etc.) can
-  // share this category so the TCC permission story lives in one place.
+  // System-level captures that look outside the browser tab. Currently
+  // desktop_screenshot + set_window_bounds; future additions (window list,
+  // clipboard, etc.) can share this category so TCC + chrome-window concerns
+  // live in one place.
   tool('desktop', () =>
     server.registerTool(
       'desktop_screenshot',
@@ -1617,6 +1624,72 @@ export function registerTools(
     },
     async ({ path: outPath, display }) =>
       text(await captureDesktopScreenshot({ path: outPath, display })),
+    ),
+  );
+
+  tool('desktop', () =>
+    server.registerTool(
+      'set_window_bounds',
+    {
+      description:
+        'Resize and/or move the GhostPilot main window. Omitted axes keep ' +
+        'their current value; set center:true to center on the active display ' +
+        '(ignores x/y). New bounds are persisted to <userData>/window-bounds.json ' +
+        'so they survive a relaunch. Returns the bounds as set plus the display ' +
+        'the window ended up on.',
+      inputSchema: {
+        x: z.number().int().optional(),
+        y: z.number().int().optional(),
+        width: z.number().int().min(200).optional(),
+        height: z.number().int().min(200).optional(),
+        center: z
+          .boolean()
+          .optional()
+          .describe('If true, ignore x/y and center on the active display.'),
+      },
+    },
+    async ({ x, y, width, height, center }) => {
+      if (mainWindow.isDestroyed()) {
+        throw new Error('set_window_bounds: main window has been destroyed');
+      }
+      const cur = mainWindow.getBounds();
+      let next = {
+        x: typeof x === 'number' ? x : cur.x,
+        y: typeof y === 'number' ? y : cur.y,
+        width: typeof width === 'number' ? width : cur.width,
+        height: typeof height === 'number' ? height : cur.height,
+      };
+      if (center) {
+        // Pick the display the window currently sits on, then center within
+        // its work area (excludes Menu Bar + Dock).
+        const display = screen.getDisplayMatching(cur);
+        const wa = display.workArea;
+        next = {
+          x: Math.round(wa.x + (wa.width - next.width) / 2),
+          y: Math.round(wa.y + (wa.height - next.height) / 2),
+          width: next.width,
+          height: next.height,
+        };
+      }
+      mainWindow.setBounds(next);
+      const applied = mainWindow.getBounds();
+      // Persist immediately — don't rely on the debounced 'resize' listener,
+      // since programmatic setBounds() may not fire it in every Electron
+      // version.
+      await saveWindowBounds(applied);
+      const display = screen.getDisplayMatching(applied);
+      return text({
+        x: applied.x,
+        y: applied.y,
+        width: applied.width,
+        height: applied.height,
+        display: {
+          id: display.id,
+          scale_factor: display.scaleFactor,
+          work_area: display.workArea,
+        },
+      });
+    },
     ),
   );
 
