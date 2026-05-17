@@ -1,3 +1,8 @@
+import { execFile } from 'node:child_process';
+import { promises as fsp } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
@@ -40,6 +45,69 @@ const text = (value: unknown) => ({
     },
   ],
 });
+
+const execFileP = promisify(execFile);
+
+/**
+ * Capture the Mac desktop to a PNG file using `/usr/sbin/screencapture`.
+ *
+ * Requires GhostPilot.app (or, in dev, the Electron helper running our main
+ * process) to hold a Screen Recording TCC grant. On a fresh install macOS
+ * silently writes a black/empty PNG instead of raising — but `screencapture`
+ * still exits 0, so we don't try to detect that here; the caller can look at
+ * the dimensions / file size to spot it.
+ *
+ * `display` is an MCP-facing 0-based index for ergonomics (0 = primary).
+ * `screencapture -D` is 1-based, so we translate.
+ */
+async function captureDesktopScreenshot(opts: {
+  path?: string;
+  display?: number;
+}): Promise<{ path: string; size_bytes: number; width: number; height: number }> {
+  const finalPath =
+    opts.path ??
+    path.join(
+      tmpdir(),
+      `ghostpilot-snap-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
+    );
+  const args = ['-x', '-t', 'png'];
+  if (typeof opts.display === 'number') args.push(`-D${opts.display + 1}`);
+  args.push(finalPath);
+
+  try {
+    await execFileP('/usr/sbin/screencapture', args, { timeout: 10_000 });
+  } catch (e) {
+    const err = e as Error & { stderr?: string | Buffer };
+    const stderr =
+      typeof err.stderr === 'string'
+        ? err.stderr
+        : err.stderr instanceof Buffer
+          ? err.stderr.toString()
+          : '';
+    throw new Error(
+      `screencapture failed: ${stderr.trim() || err.message || 'unknown error'} ` +
+        '(GhostPilot.app may be missing the Screen Recording TCC grant — System ' +
+        'Settings > Privacy & Security > Screen Recording > add GhostPilot.app).',
+    );
+  }
+
+  let buf: Buffer;
+  try {
+    buf = await fsp.readFile(finalPath);
+  } catch (e) {
+    throw new Error(
+      `screencapture reported success but output file is missing: ${finalPath}`,
+    );
+  }
+  // Parse the PNG IHDR (bytes 16..24) for width + height. PNG magic = 89 50 4E 47.
+  if (buf.length < 24 || buf[0] !== 0x89 || buf.toString('ascii', 1, 4) !== 'PNG') {
+    throw new Error('screencapture produced a non-PNG output');
+  }
+  const width = buf.readUInt32BE(16);
+  const height = buf.readUInt32BE(20);
+  const stat = await fsp.stat(finalPath);
+  return { path: finalPath, size_bytes: stat.size, width, height };
+}
 
 /**
  * Summary of what got registered — returned by registerTools(), surfaced by
@@ -1464,6 +1532,40 @@ export function registerTools(
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await skills.delete(id) }),
+    ),
+  );
+
+  // ── Desktop / System ──────────────────────────────────────────────
+  // System-level captures that look outside the browser tab. Currently just
+  // desktop_screenshot; future additions (window list, clipboard, etc.) can
+  // share this category so the TCC permission story lives in one place.
+  tool('desktop', () =>
+    server.registerTool(
+      'desktop_screenshot',
+    {
+      description:
+        'Capture the Mac desktop (all displays, or a specific one) to a PNG ' +
+        'file using /usr/sbin/screencapture. Requires GhostPilot.app to hold ' +
+        'Screen Recording TCC permission. Returns { path, size_bytes, width, height }.',
+      inputSchema: {
+        path: z
+          .string()
+          .optional()
+          .describe(
+            'Absolute output path. Defaults to /tmp/ghostpilot-snap-<isoTimestamp>.png.',
+          ),
+        display: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            '0-based display index (0 = primary). Omit to capture all displays into one PNG.',
+          ),
+      },
+    },
+    async ({ path: outPath, display }) =>
+      text(await captureDesktopScreenshot({ path: outPath, display })),
     ),
   );
 

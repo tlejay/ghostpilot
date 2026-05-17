@@ -36,6 +36,7 @@ export type ToolCategory =
   | 'profiles'
   | 'skills'
   | 'cdp'
+  | 'desktop'
   | 'lifecycle';
 
 export const ALL_CATEGORIES: readonly ToolCategory[] = [
@@ -55,6 +56,7 @@ export const ALL_CATEGORIES: readonly ToolCategory[] = [
   'profiles',
   'skills',
   'cdp',
+  'desktop',
   'lifecycle',
 ] as const;
 

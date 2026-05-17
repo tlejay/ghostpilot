@@ -26,7 +26,7 @@ Most "AI browsers" are sandboxed CDP shells aimed at headless automation. GhostP
 - **DevTools** for the active page (`Cmd+Opt+I`)
 - **Import from Chrome** — bookmarks (JSON) and history (SQLite via sql.js), one click in the side panel or via MCP
 - **Update notifications** — checks GitHub releases (or your own manifest URL) on startup and nags through the MCP CLI banner until you upgrade
-- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **57 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access
+- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **58 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access
 - **Mobile-ready connector** — pair with a tunnel (cloudflared / ngrok) and Claude on iPhone, iPad, or web can pilot this browser. No other Mac browser supports this today.
 - **Self-learning skill registry** — Claude can save proven step-by-step playbooks (`save_skill`) and replay them on the next run (`list_skills` / `get_skill`). Works across Claude Code CLI, Claude.ai web, and the Claude mobile app.
 - **Standard Chrome shortcuts** — `Cmd+T/W/L/R`, `Cmd+[/]`, `Cmd+B` for the side panel
@@ -59,7 +59,7 @@ Then in any project, run `claude` and try:
 > "Show me my history from the last hour."
 > "Go to events.madebytle.com, screenshot it, and tell me what's on the homepage."
 
-### Tool surface (57)
+### Tool surface (58)
 
 | Group | Tools |
 |-------|-------|
@@ -80,6 +80,7 @@ Then in any project, run `claude` and try:
 | Video downloader (3) | `ytdlp_status`, `download_with_ytdlp`, `list_ytdlp_jobs` — downloads anything that plays in a browser tab |
 | Chrome import (3) | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
 | Skills (4) | `list_skills`, `get_skill`, `save_skill`, `delete_skill` — reusable browser-automation playbooks shared across every MCP client |
+| Desktop (1) | `desktop_screenshot` — capture the Mac desktop (system-level, outside the browser tab; needs Screen Recording TCC) |
 | Updates (1) | `check_for_updates` |
 
 Every tool that takes `tabId` falls back to the active tab when omitted.

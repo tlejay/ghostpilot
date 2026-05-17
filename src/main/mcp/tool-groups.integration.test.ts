@@ -58,11 +58,11 @@ test('histogram covers every category the source uses', () => {
   }
 });
 
-test('total tool count matches plan §3 (~57 + 1 introspection)', () => {
+test('total tool count matches plan §3 (~57 + 1 introspection + 1 desktop)', () => {
   const histo = buildHistogram();
   const total = Object.values(histo).reduce((a, b) => a + b, 0);
-  // 57 pre-existing tools + tool_categories (lifecycle) = 58.
-  assert.equal(total, 58, `expected 58 total tool registrations, got ${total}`);
+  // 57 pre-existing tools + tool_categories (lifecycle) + desktop_screenshot = 59.
+  assert.equal(total, 59, `expected 59 total tool registrations, got ${total}`);
 });
 
 test('per-category counts match plan §3', () => {
@@ -84,6 +84,7 @@ test('per-category counts match plan §3', () => {
     profiles: 1,
     skills: 4,
     cdp: 1,
+    desktop: 1, // desktop_screenshot — added 2026-05-17
     lifecycle: 3, // stop + check_for_updates + tool_categories
   };
   for (const [cat, want] of Object.entries(expected)) {
@@ -96,12 +97,12 @@ test('per-category counts match plan §3', () => {
 });
 
 // §7.2 expected-count matrix.
-test('§7.2 row 1: unset → all 58 tools', () => {
-  assert.equal(expectedEnabled(undefined), 58);
+test('§7.2 row 1: unset → all 59 tools', () => {
+  assert.equal(expectedEnabled(undefined), 59);
 });
 
-test("§7.2 row 2: 'all' → all 58 tools", () => {
-  assert.equal(expectedEnabled('all'), 58);
+test("§7.2 row 2: 'all' → all 59 tools", () => {
+  assert.equal(expectedEnabled('all'), 59);
 });
 
 test("§7.2 row 3: 'core' → 22 (nav+tabs+interact+inspect) + 3 lifecycle = 25", () => {
