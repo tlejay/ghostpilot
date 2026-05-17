@@ -1,8 +1,7 @@
-import { execFile } from 'node:child_process';
 import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
+import { desktopCapturer, screen, systemPreferences } from 'electron';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
@@ -46,19 +45,24 @@ const text = (value: unknown) => ({
   ],
 });
 
-const execFileP = promisify(execFile);
-
 /**
- * Capture the Mac desktop to a PNG file using `/usr/sbin/screencapture`.
+ * Capture the Mac desktop to a PNG file using Electron's `desktopCapturer`.
  *
- * Requires GhostPilot.app (or, in dev, the Electron helper running our main
- * process) to hold a Screen Recording TCC grant. On a fresh install macOS
- * silently writes a black/empty PNG instead of raising — but `screencapture`
- * still exits 0, so we don't try to detect that here; the caller can look at
- * the dimensions / file size to spot it.
+ * Why not /usr/sbin/screencapture? On macOS Sequoia, TCC's Screen Recording
+ * permission does NOT propagate from the parent (Electron) to subprocess
+ * children — execFile('screencapture', ...) runs without TCC inheritance and
+ * fails with "could not create image from display" even when GhostPilot.app
+ * itself has been granted. Doing the capture INSIDE the Electron main process
+ * (which holds the TCC grant) sidesteps the issue.
+ * (Investigation: task c464fd78.)
  *
- * `display` is an MCP-facing 0-based index for ergonomics (0 = primary).
- * `screencapture -D` is 1-based, so we translate.
+ * `display` is a 0-based index over `screen.getAllDisplays()`. Omit it to
+ * capture the primary display. (Cross-display single-PNG composition isn't
+ * a desktopCapturer feature; we keep the simpler "one display per call"
+ * shape and let callers loop if they need both.)
+ *
+ * Width/height come straight from NativeImage.getSize() — no PNG header
+ * parsing required.
  */
 async function captureDesktopScreenshot(opts: {
   path?: string;
@@ -70,43 +74,90 @@ async function captureDesktopScreenshot(opts: {
       tmpdir(),
       `ghostpilot-snap-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
     );
-  const args = ['-x', '-t', 'png'];
-  if (typeof opts.display === 'number') args.push(`-D${opts.display + 1}`);
-  args.push(finalPath);
 
-  try {
-    await execFileP('/usr/sbin/screencapture', args, { timeout: 10_000 });
-  } catch (e) {
-    const err = e as Error & { stderr?: string | Buffer };
-    const stderr =
-      typeof err.stderr === 'string'
-        ? err.stderr
-        : err.stderr instanceof Buffer
-          ? err.stderr.toString()
-          : '';
+  const displays = screen.getAllDisplays();
+  const targetIdx =
+    typeof opts.display === 'number'
+      ? opts.display
+      : displays.findIndex((d) => d.id === screen.getPrimaryDisplay().id);
+  const finalIdx = targetIdx < 0 ? 0 : targetIdx;
+  const target = displays[finalIdx];
+  if (!target) {
     throw new Error(
-      `screencapture failed: ${stderr.trim() || err.message || 'unknown error'} ` +
-        '(GhostPilot.app may be missing the Screen Recording TCC grant — System ' +
-        'Settings > Privacy & Security > Screen Recording > add GhostPilot.app).',
+      `desktop_screenshot: display index ${opts.display} out of range ` +
+        `(only ${displays.length} display(s) available)`,
     );
   }
+  // Ask for the display's native pixel resolution. desktopCapturer thumbnailSize
+  // expresses pixels, so multiply CSS-pixel size by scaleFactor to avoid Retina downscale.
+  const tw = Math.round(target.size.width * target.scaleFactor);
+  const th = Math.round(target.size.height * target.scaleFactor);
 
-  let buf: Buffer;
+  // On macOS, surface TCC state in the error message so the caller knows
+  // whether to (a) grant permission or (b) wait for the OS prompt. Status
+  // values: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'.
+  const tccStatus =
+    process.platform === 'darwin'
+      ? systemPreferences.getMediaAccessStatus('screen')
+      : 'n/a';
+  // eslint-disable-next-line no-console
+  console.error(`[desktop_screenshot] TCC screen-recording status: ${tccStatus}`);
+
+  let sources: Electron.DesktopCapturerSource[];
   try {
-    buf = await fsp.readFile(finalPath);
+    sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: tw, height: th },
+    });
   } catch (e) {
+    // Log the raw error to main-process stderr so we can grep it in the dev
+    // log; the MCP response only carries the formatted message back.
+    // eslint-disable-next-line no-console
+    console.error('[desktop_screenshot] getSources threw:', e);
+    const detail =
+      e instanceof Error
+        ? `${e.name}: ${e.message}`
+        : typeof e === 'string'
+          ? e
+          : JSON.stringify(e);
     throw new Error(
-      `screencapture reported success but output file is missing: ${finalPath}`,
+      `desktopCapturer.getSources failed: ${detail || 'no detail'} ` +
+        `(TCC screen-recording status: ${tccStatus}). ` +
+        'If status is "denied" or "not-determined", grant Electron.app (CFBundleName ' +
+        '"GhostPilot") Screen Recording in System Settings > Privacy & Security > ' +
+        'Screen Recording, then quit & relaunch GhostPilot.',
     );
   }
-  // Parse the PNG IHDR (bytes 16..24) for width + height. PNG magic = 89 50 4E 47.
-  if (buf.length < 24 || buf[0] !== 0x89 || buf.toString('ascii', 1, 4) !== 'PNG') {
-    throw new Error('screencapture produced a non-PNG output');
+  if (sources.length === 0) {
+    throw new Error(
+      'desktopCapturer returned 0 screen sources — Screen Recording TCC ' +
+        'permission is likely missing (System Settings > Privacy & Security > ' +
+        'Screen Recording > add GhostPilot.app).',
+    );
   }
-  const width = buf.readUInt32BE(16);
-  const height = buf.readUInt32BE(20);
+  // Match the source by display_id when possible (desktopCapturer's display_id
+  // is the same number screen.Display#id reports). Fall back to first source.
+  const match =
+    sources.find((s) => s.display_id === String(target.id)) ?? sources[0];
+  const img = match.thumbnail;
+  if (img.isEmpty()) {
+    throw new Error(
+      'desktopCapturer thumbnail was empty — Screen Recording TCC permission ' +
+        'is likely missing (System Settings > Privacy & Security > Screen ' +
+        'Recording > add GhostPilot.app).',
+    );
+  }
+  const png = img.toPNG();
+  await fsp.writeFile(finalPath, png);
+
+  const size = img.getSize();
   const stat = await fsp.stat(finalPath);
-  return { path: finalPath, size_bytes: stat.size, width, height };
+  return {
+    path: finalPath,
+    size_bytes: stat.size,
+    width: size.width,
+    height: size.height,
+  };
 }
 
 /**
