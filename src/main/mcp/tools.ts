@@ -5,6 +5,7 @@ import {
   sortCategories,
   type ToolCategory,
 } from './tool-groups.js';
+import { withRetry, waitStable, isTransientError, type Box } from './auto-retry.js';
 import type { TabManager } from '../tab-manager.js';
 import type { HistoryStore } from '../storage/history.js';
 import type { BookmarksStore } from '../storage/bookmarks.js';
@@ -95,6 +96,68 @@ export function registerTools(
     const active = tabManager.getActiveId();
     if (!active) throw new Error('No active tab');
     return active;
+  };
+
+  // ── Auto-retry helpers (plan §4) ──────────────────────────────────
+  // Shared shape used by the 6 mutating tools. Kept here (rather than re-spelled
+  // at each call site) so a future schema tweak is one edit. retries min=1 per
+  // plan Q3; withRetry also clamps internally, but rejecting at the schema
+  // gives the caller a clearer error.
+  const retryOptsSchema = {
+    retries: z.number().int().min(1).max(10).optional(),
+    retry_delay_ms: z.array(z.number().int().nonnegative()).optional(),
+    wait_stable_ms: z.number().int().nonnegative().optional(),
+    wait_timeout_ms: z.number().int().positive().optional(),
+  } as const;
+
+  type RetryOpts = {
+    retries?: number;
+    retry_delay_ms?: number[];
+    wait_stable_ms?: number;
+    wait_timeout_ms?: number;
+  };
+
+  // validate() helper for tools that return {ok:false,error:'…'} on soft
+  // failure: convert the failure into a retry signal only when the error
+  // matches a transient pattern. Non-transient soft failures (e.g. 'not
+  // found' from an invalid selector) pass through unchanged so callers see
+  // the same response shape they did before plan #3.
+  const validateOkOrTransient = (r: unknown): string | null => {
+    const v = r as { ok?: boolean; error?: string } | null;
+    if (!v) return null;
+    if (v.ok) return null;
+    const err = v.error ?? '';
+    return isTransientError(err) ? err : null;
+  };
+
+  // Wait until the element matching `selector` has a bounding-box that hasn't
+  // moved for `wait_stable_ms`. Skipped entirely when wait_stable_ms===0 (the
+  // documented opt-out per plan §4.2). Errors flow up to withRetry which will
+  // retry the whole wait+act on the transient "not stable" / "not visible".
+  const waitStableForSelector = async (
+    id: string,
+    selector: string,
+    opts: RetryOpts,
+  ): Promise<void> => {
+    if (opts.wait_stable_ms === 0) return;
+    const sel = JSON.stringify(selector);
+    const getBox = async (): Promise<Box | null> => {
+      const r = (await tabManager.evaluate(
+        id,
+        `(() => {
+          const el = document.querySelector(${sel});
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return null;
+          return { x: r.left, y: r.top, width: r.width, height: r.height };
+        })()`,
+      )) as Box | null;
+      return r;
+    };
+    await waitStable(getBox, {
+      wait_stable_ms: opts.wait_stable_ms,
+      wait_timeout_ms: opts.wait_timeout_ms,
+    });
   };
 
   // ── Tabs ──────────────────────────────────────────────────────────
@@ -287,16 +350,34 @@ export function registerTools(
     server.registerTool(
       'click',
     {
-      description: 'Click the first element matching the CSS selector.',
-      inputSchema: { selector: z.string(), tabId: z.string().optional() },
+      description:
+        'Click the first element matching the CSS selector. Auto-waits for the ' +
+        'element to be visible + stable (bounding box unchanged for wait_stable_ms) ' +
+        'and retries on transient DOM errors (node detached, target closed, etc.).',
+      inputSchema: {
+        selector: z.string(),
+        tabId: z.string().optional(),
+        ...retryOptsSchema,
+      },
     },
-    async ({ selector, tabId }) => {
+    async ({ selector, tabId, retries, retry_delay_ms, wait_stable_ms, wait_timeout_ms }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
       const sel = JSON.stringify(selector);
-      const out = await tabManager.evaluate(
-        id,
-        `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+      const out = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return (await tabManager.evaluate(
+            id,
+            `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+          )) as { ok: boolean; error?: string } | null;
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `click(${sel})`,
+          validate: validateOkOrTransient,
+        },
       );
       return text(out);
     },
@@ -307,29 +388,52 @@ export function registerTools(
     server.registerTool(
       'fill',
     {
-      description: 'Set value on input/textarea matching selector and dispatch input + change events.',
+      description:
+        'Set value on input/textarea matching selector and dispatch input + change ' +
+        'events. Auto-waits for the element to be visible + stable and retries on ' +
+        'transient DOM errors (node detached, frame detached, target closed, etc.).',
       inputSchema: {
         selector: z.string(),
         value: z.string(),
         tabId: z.string().optional(),
+        ...retryOptsSchema,
       },
     },
-    async ({ selector, value, tabId }) => {
+    async ({
+      selector,
+      value,
+      tabId,
+      retries,
+      retry_delay_ms,
+      wait_stable_ms,
+      wait_timeout_ms,
+    }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
       const sel = JSON.stringify(selector);
       const val = JSON.stringify(value);
-      const out = await tabManager.evaluate(
-        id,
-        `(() => {
-          const el = document.querySelector(${sel});
-          if (!el) return { ok:false, error:'not found' };
-          el.focus();
-          if ('value' in el) el.value = ${val};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return { ok:true };
-        })()`,
+      const out = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return (await tabManager.evaluate(
+            id,
+            `(() => {
+              const el = document.querySelector(${sel});
+              if (!el) return { ok:false, error:'not found' };
+              el.focus();
+              if ('value' in el) el.value = ${val};
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return { ok:true };
+            })()`,
+          )) as { ok: boolean; error?: string } | null;
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `fill(${sel})`,
+          validate: validateOkOrTransient,
+        },
       );
       return text(out);
     },
@@ -490,16 +594,33 @@ export function registerTools(
       'press_key',
     {
       description:
-        'Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown", or "a"). Optional modifiers: shift/control/alt/meta.',
+        'Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown", or "a"). ' +
+        'Optional modifiers: shift/control/alt/meta. Retries on transient errors ' +
+        '(target closed, WebContents destroyed) — key events go to whatever has ' +
+        'focus, so no selector / waitStable needed.',
       inputSchema: {
         key: z.string(),
         modifiers: z.array(z.enum(['shift', 'control', 'alt', 'meta'])).optional(),
         tabId: z.string().optional(),
+        // press_key has no selector, so wait_stable_ms / wait_timeout_ms are
+        // omitted — only retry knobs apply.
+        retries: retryOptsSchema.retries,
+        retry_delay_ms: retryOptsSchema.retry_delay_ms,
       },
     },
-    async ({ key, modifiers, tabId }) => {
+    async ({ key, modifiers, tabId, retries, retry_delay_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = tabManager.pressKey(id, key, modifiers);
+      const ok = await withRetry(
+        async () => tabManager.pressKey(id, key, modifiers),
+        {
+          retries,
+          retry_delay_ms,
+          label: `press_key(${JSON.stringify(key)})`,
+          // pressKey returns false when the WebContents is gone — surface it as
+          // a transient so the retry loop has a chance if the tab is recreating.
+          validate: (r) => (r === false ? 'target closed' : null),
+        },
+      );
       return text({ ok });
     },
     ),
@@ -510,12 +631,26 @@ export function registerTools(
       'type_text',
     {
       description:
-        'Type a literal string into whichever element currently has focus (call `click` or `fill` first to focus an input).',
-      inputSchema: { text: z.string(), tabId: z.string().optional() },
+        'Type a literal string into whichever element currently has focus (call ' +
+        '`click` or `fill` first to focus an input). Retries on transient errors.',
+      inputSchema: {
+        text: z.string(),
+        tabId: z.string().optional(),
+        retries: retryOptsSchema.retries,
+        retry_delay_ms: retryOptsSchema.retry_delay_ms,
+      },
     },
-    async ({ text: input, tabId }) => {
+    async ({ text: input, tabId, retries, retry_delay_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = tabManager.typeText(id, input);
+      const ok = await withRetry(
+        async () => tabManager.typeText(id, input),
+        {
+          retries,
+          retry_delay_ms,
+          label: 'type_text',
+          validate: (r) => (r === false ? 'target closed' : null),
+        },
+      );
       return text({ ok });
     },
     ),
@@ -525,12 +660,31 @@ export function registerTools(
     server.registerTool(
       'hover',
     {
-      description: 'Move the mouse pointer to the centre of the element matching the selector.',
-      inputSchema: { selector: z.string(), tabId: z.string().optional() },
+      description:
+        'Move the mouse pointer to the centre of the element matching the selector. ' +
+        'Auto-waits for the element to be visible + stable and retries on transient ' +
+        'DOM errors.',
+      inputSchema: {
+        selector: z.string(),
+        tabId: z.string().optional(),
+        ...retryOptsSchema,
+      },
     },
-    async ({ selector, tabId }) => {
+    async ({ selector, tabId, retries, retry_delay_ms, wait_stable_ms, wait_timeout_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = await tabManager.hover(id, selector);
+      const ok = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return tabManager.hover(id, selector);
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `hover(${JSON.stringify(selector)})`,
+          // hover returns false when the element vanished mid-call → transient.
+          validate: (r) => (r === false ? 'element is not visible' : null),
+        },
+      );
       return text({ ok });
     },
     ),
@@ -856,9 +1010,24 @@ export function registerTools(
         clickSelector: z.string().optional(),
         timeoutMs: z.number().int().positive().optional(),
         tabId: z.string().optional(),
+        // Auto-retry params apply to the direct-input path only; the
+        // fileChooser path is single-shot (a retry would open a second
+        // OS picker — per plan §3 non-goals).
+        ...retryOptsSchema,
       },
     },
-    async ({ selector, clickSelector, files, timeoutMs, tabId }) => {
+    async ({
+      selector,
+      clickSelector,
+      files,
+      timeoutMs,
+      tabId,
+      retries,
+      retry_delay_ms,
+      // wait_stable_ms / wait_timeout_ms intentionally ignored for upload —
+      // the input is usually display:none so a bounding-box wait would
+      // always time out. Selector lookup happens inside the retry loop.
+    }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
 
@@ -917,21 +1086,35 @@ export function registerTools(
       if (!selector) {
         return text({ ok: false, error: 'provide either `selector` or `clickSelector`' });
       }
-      const doc = (await tabManager.cdpSend(id, 'DOM.getDocument', {})) as {
-        root: { nodeId: number };
-      };
-      const found = (await tabManager.cdpSend(id, 'DOM.querySelector', {
-        nodeId: doc.root.nodeId,
-        selector,
-      })) as { nodeId: number };
-      if (!found.nodeId) {
-        return text({ ok: false, error: 'selector did not match any element' });
-      }
-      await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
-        files,
-        nodeId: found.nodeId,
-      });
-      return text({ ok: true, files, via: 'directInput' });
+      // The whole getDocument → querySelector → setFileInputFiles sequence is
+      // idempotent (setting paths on the same input element repeats cleanly),
+      // so wrap it. "selector did not match" is non-transient → no retry.
+      const out = await withRetry(
+        async () => {
+          const doc = (await tabManager.cdpSend(id, 'DOM.getDocument', {})) as {
+            root: { nodeId: number };
+          };
+          const found = (await tabManager.cdpSend(id, 'DOM.querySelector', {
+            nodeId: doc.root.nodeId,
+            selector,
+          })) as { nodeId: number };
+          if (!found.nodeId) {
+            return { ok: false as const, error: 'selector did not match any element' };
+          }
+          await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
+            files,
+            nodeId: found.nodeId,
+          });
+          return { ok: true as const, files, via: 'directInput' as const };
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `upload_file(${JSON.stringify(selector)})`,
+          validate: validateOkOrTransient,
+        },
+      );
+      return text(out);
     },
     ),
   );
