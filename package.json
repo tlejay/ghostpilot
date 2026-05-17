@@ -31,7 +31,9 @@
     "pack": "pnpm run assets && electron-vite build && electron-builder --mac --dir",
     "dist": "pnpm run assets && electron-vite build && electron-builder --mac",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "pnpm run build && playwright test",
+    "test": "pnpm run test:unit && pnpm run test:integration && pnpm run build && playwright test",
+    "test:unit": "node --experimental-strip-types --test src/main/mcp/*.test.ts tests/unit/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test tests/integration/*.test.ts",
     "test:ui": "playwright test --reporter=list",
     "test:headed": "playwright test --headed"
   },
