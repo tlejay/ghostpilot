@@ -6,6 +6,14 @@ semver based on the `package.json` field.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-05-18
+
+Release covers Plans #2 (stable selectors), #3 (auto-retry + auto-wait), and
+#6 (HAR export + richer network filters), plus four standalone tool additions
+that landed in between: tool-category filtering, `desktop_screenshot`,
+`set_window_bounds` + persisted window bounds, and the `ext_*` external-CDP
+tool group.
+
 ### Added — HAR export + richer network filters (plan #6)
 
 `list_network_requests` now accepts richer filters with AND semantics across
@@ -110,3 +118,39 @@ Implementation: `src/main/mcp/auto-retry.ts`.
 Tests: 9 unit (`tests/unit/auto-retry.test.ts`) + 6 integration
 (`tests/integration/auto-retry.test.ts`).
 New scripts: `pnpm test:unit`, `pnpm test:integration`.
+
+### Added — external-CDP tool group (`ext_*`)
+
+Six new tools that drive an externally launched Chrome over CDP (port from
+`GHOSTPILOT_EXT_CDP_PORT`, default `9222`) instead of GhostPilot's embedded
+WebContentsViews — useful for sites that key on a real Chrome profile
+(LINE Web, Facebook session) where the embedded Electron profile isn't
+authenticated:
+
+- `ext_list_tabs`, `ext_navigate`, `ext_evaluate`, `ext_click`,
+  `ext_a11y_snapshot`, `ext_screenshot`
+
+CDP-level click uses `Input.dispatchMouseEvent` to produce a trusted
+`MouseEvent` (`event.isTrusted = true`) — needed for sites that gate
+handlers on trust.
+
+### Added — `desktop_screenshot`
+
+Capture the full desktop (any monitor / external display) via Electron's
+`desktopCapturer`. Replaced an earlier `screencapture(1)` shell-out
+implementation to inherit GhostPilot's TCC Screen Recording grant rather
+than requiring a separate grant for the shell binary.
+
+### Added — `set_window_bounds` + persisted window bounds
+
+GhostPilot now persists its main `BrowserWindow` size/position across
+launches (per profile). New `set_window_bounds` MCP tool moves/resizes
+the window programmatically.
+
+### Added — tool-category filtering (`GHOSTPILOT_TOOLS`) + introspection
+
+MCP tool registration now respects an opt-in/opt-out category allowlist
+via the `GHOSTPILOT_TOOLS` env var (e.g. `tabs,page,network` /
+`-emulation,-performance`). New `tool_categories` MCP tool returns the
+taxonomy + which tools are currently registered. Lets thin clients trim
+the tool surface to what they actually use.
