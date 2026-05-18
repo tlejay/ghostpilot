@@ -63,12 +63,12 @@ test('histogram covers every category the source uses', () => {
   }
 });
 
-test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator)', () => {
+test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator + 1 har)', () => {
   const histo = buildHistogram();
   const total = Object.values(histo).reduce((a, b) => a + b, 0);
   // 57 pre-existing tools + tool_categories (lifecycle) + desktop_screenshot
-  //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) = 70.
-  assert.equal(total, 70, `expected 70 total tool registrations, got ${total}`);
+  //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) + export_har (Plan #6) = 71.
+  assert.equal(total, 71, `expected 71 total tool registrations, got ${total}`);
 });
 
 test('per-category counts match plan §3', () => {
@@ -78,7 +78,7 @@ test('per-category counts match plan §3', () => {
     tabs: 4,
     interact: 7,
     inspect: 7, // 6 + a11y_snapshot
-    network: 2,
+    network: 3, // list_network_requests + clear_network_requests + export_har (Plan #6, 2026-05-18)
     console: 2,
     performance: 3,
     media: 3,
@@ -105,12 +105,12 @@ test('per-category counts match plan §3', () => {
 });
 
 // §7.2 expected-count matrix.
-test('§7.2 row 1: unset → all 70 tools', () => {
-  assert.equal(expectedEnabled(undefined), 70);
+test('§7.2 row 1: unset → all 71 tools', () => {
+  assert.equal(expectedEnabled(undefined), 71);
 });
 
-test("§7.2 row 2: 'all' → all 70 tools", () => {
-  assert.equal(expectedEnabled('all'), 70);
+test("§7.2 row 2: 'all' → all 71 tools", () => {
+  assert.equal(expectedEnabled('all'), 71);
 });
 
 test("§7.2 row 3: 'core' → 22 (nav+tabs+interact+inspect) + 3 lifecycle = 25", () => {

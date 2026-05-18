@@ -26,7 +26,7 @@ Most "AI browsers" are sandboxed CDP shells aimed at headless automation. GhostP
 - **DevTools** for the active page (`Cmd+Opt+I`)
 - **Import from Chrome** — bookmarks (JSON) and history (SQLite via sql.js), one click in the side panel or via MCP
 - **Update notifications** — checks GitHub releases (or your own manifest URL) on startup and nags through the MCP CLI banner until you upgrade
-- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **69 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access, an **External Chrome** tool group (`ext_*`) that drives a separate Chrome instance over CDP (so one MCP server can pilot both the embedded tabs and an external Chrome profile, e.g. LINE Web in `~/.chrome-agent`), and Playwright-style **stable selectors** (`get_by_role` / `get_by_text` / `get_by_label` / `get_by_test_id`) that resolve elements by semantic attributes — survives DOM refactors that break CSS-selector scripts
+- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **70 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access, an **External Chrome** tool group (`ext_*`) that drives a separate Chrome instance over CDP (so one MCP server can pilot both the embedded tabs and an external Chrome profile, e.g. LINE Web in `~/.chrome-agent`), Playwright-style **stable selectors** (`get_by_role` / `get_by_text` / `get_by_label` / `get_by_test_id`) that resolve elements by semantic attributes — survives DOM refactors — and **HAR export** (`export_har`) for portable network captures openable in Chrome DevTools / Charles / Postman
 - **Mobile-ready connector** — pair with a tunnel (cloudflared / ngrok) and Claude on iPhone, iPad, or web can pilot this browser. No other Mac browser supports this today.
 - **Self-learning skill registry** — Claude can save proven step-by-step playbooks (`save_skill`) and replay them on the next run (`list_skills` / `get_skill`). Works across Claude Code CLI, Claude.ai web, and the Claude mobile app.
 - **Standard Chrome shortcuts** — `Cmd+T/W/L/R`, `Cmd+[/]`, `Cmd+B` for the side panel
@@ -59,7 +59,7 @@ Then in any project, run `claude` and try:
 > "Show me my history from the last hour."
 > "Go to events.madebytle.com, screenshot it, and tell me what's on the homepage."
 
-### Tool surface (69)
+### Tool surface (70)
 
 | Group | Tools |
 |-------|-------|
@@ -67,7 +67,7 @@ Then in any project, run `claude` and try:
 | Page (7) | `get_page_text`, `get_page_html`, `screenshot`, `evaluate`, `click`, `fill`, `wait_for_selector` |
 | Input (3) | `press_key`, `type_text`, `hover` |
 | Console (2) | `list_console_messages`, `clear_console_messages` |
-| Network (2) | `list_network_requests`, `clear_network_requests` |
+| Network (3) | `list_network_requests` — captured requests with rich filters (`method` scalar/array, `status` scalar/array, `urlPattern` substring or `/regex/flags`, `mimeType` substring, `since` ISO/epoch, `failedOnly` shortcut); `clear_network_requests`; `export_har` — dump the filtered capture to a HAR 1.2 file openable in Chrome DevTools / Charles / Postman (v1: no response body) |
 | Emulation (3) | `emulate` (device + UA + network), `clear_emulation`, `wait_for_text` |
 | Accessibility (1) | `a11y_snapshot` — semantic-tree dump for AI navigation |
 | Files / dialogs (2) | `upload_file`, `handle_next_dialog` |

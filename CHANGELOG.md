@@ -6,6 +6,40 @@ semver based on the `package.json` field.
 
 ## [Unreleased]
 
+### Added — HAR export + richer network filters (plan #6)
+
+`list_network_requests` now accepts richer filters with AND semantics across
+axes — useful when a page fires 200+ requests and you only want the failures
+or one endpoint family:
+
+| Field | Type | Notes |
+|---|---|---|
+| `method` | string \| string[] | UPPERCASE; scalar form back-compat |
+| `status` | number \| number[] | exact match |
+| `urlPattern` | string | substring OR Perl-style `/regex/flags` |
+| `urlIncludes` | string | legacy alias of `urlPattern` (substring) |
+| `mimeType` | string | case-insensitive substring of response `Content-Type` |
+| `since` | string \| number | ISO timestamp or epoch ms — drop earlier entries |
+| `failedOnly` | boolean | shortcut for `status >= 400 \|\| error != null` |
+
+Per-entry shape gains optional `requestHeaders`, `responseHeaders`,
+`statusLine`, `httpVersion`, `mimeType` fields, populated via Electron's
+`onBeforeSendHeaders` + `onHeadersReceived` (synchronous; no added latency).
+
+New `export_har` MCP tool writes the (filtered) capture to a HAR 1.2 file
+on disk — openable in Chrome DevTools (Network tab → Import HAR…), Charles,
+Postman, k6, etc. Same filter shape as `list_network_requests`, plus
+`path` (defaults to `/tmp/ghostpilot-har-<ISO>.har`) and `pretty`.
+
+v1 caveat: response BODY is not captured (HAR `content.size = -1`, no
+`content.text`). All major HAR readers accept this shape; revisit if a
+workload needs body bytes.
+
+Implementation: `src/main/mcp/har-export.ts` (pure `filterEntries` +
+`toHar` + `writeHar`).
+Tests: 16 unit (`src/main/mcp/har-export.test.ts`); `tool-groups.integration`
+expects 71 total tools / `network: 3`.
+
 ### Added — Playwright-style stable selectors (plan #2)
 
 Four new MCP tools under the `locator` category that resolve elements by

@@ -11,6 +11,13 @@ import {
 } from './tool-groups.js';
 import { withRetry, waitStable, isTransientError, type Box } from './auto-retry.js';
 import { registerLocatorTools } from './locator-tools.js';
+import {
+  filterEntries as filterNetworkEntries,
+  toHar,
+  writeHar,
+  defaultHarPath,
+  defaultHarMeta,
+} from './har-export.js';
 import { saveBounds as saveWindowBounds } from '../window-bounds.js';
 import type { BrowserWindow } from 'electron';
 import type { TabManager } from '../tab-manager.js';
@@ -853,23 +860,49 @@ export function registerTools(
   );
 
   // ── Network ───────────────────────────────────────────────────────
+  // Shared filter schema for list_network_requests + export_har (Plan #6).
+  // All fields optional, AND semantics across axes. `method` and `status`
+  // accept either a scalar (back-compat) or an array.
+  const networkFilterSchema = {
+    method: z.union([z.string(), z.array(z.string())]).optional(),
+    status: z.union([z.number().int(), z.array(z.number().int())]).optional(),
+    urlPattern: z.string().optional(),
+    urlIncludes: z.string().optional(),
+    mimeType: z.string().optional(),
+    since: z.union([z.string(), z.number()]).optional(),
+    failedOnly: z.boolean().optional(),
+  } as const;
+
   tool('network', () =>
     server.registerTool(
       'list_network_requests',
     {
       description:
-        'Return network requests captured for the tab (rolling buffer of 500). Optional filters: method (GET/POST/...), status, urlIncludes (substring match).',
+        'Return network requests captured for the tab (rolling buffer of 500). ' +
+        'All filters optional, AND semantics: method (string or [strings]), status (number or [numbers]), ' +
+        'urlPattern (substring OR `/regex/flags`), urlIncludes (legacy substring alias), mimeType (substring ' +
+        'of response Content-Type), since (ISO timestamp or epoch ms), failedOnly (status≥400 || error≠null). ' +
+        'Each entry now also carries requestHeaders / responseHeaders / statusLine / mimeType when available — ' +
+        'use export_har for a portable .har file.',
       inputSchema: {
-        method: z.string().optional(),
-        status: z.number().int().optional(),
-        urlIncludes: z.string().optional(),
+        ...networkFilterSchema,
         tabId: z.string().optional(),
       },
     },
-    async ({ method, status, urlIncludes, tabId }) => {
-      const id = resolveTabId(tabId);
+    async (args: {
+      method?: string | string[];
+      status?: number | number[];
+      urlPattern?: string;
+      urlIncludes?: string;
+      mimeType?: string;
+      since?: string | number;
+      failedOnly?: boolean;
+      tabId?: string;
+    }) => {
+      const id = resolveTabId(args.tabId);
       requireTab(id);
-      return text(recorder.getNetwork(id, { method, status, urlIncludes }));
+      const all = recorder.getNetworkAll(id);
+      return text(filterNetworkEntries(all, args));
     },
     ),
   );
@@ -886,6 +919,57 @@ export function registerTools(
       requireTab(id);
       recorder.clearNetwork(id);
       return text({ ok: true });
+    },
+    ),
+  );
+
+  tool('network', () =>
+    server.registerTool(
+      'export_har',
+    {
+      description:
+        'Write the captured network buffer (optionally filtered) to a HAR 1.2 file on disk. ' +
+        'Same filter fields as list_network_requests. Default path is /tmp/ghostpilot-har-<ISO>.har. ' +
+        'Output is openable in Chrome DevTools (Network tab → Import HAR…), Charles, Postman, k6, etc. ' +
+        'NOTE v1: response BODY is not captured (HAR `content.text` is omitted; `content.size` is -1). ' +
+        'All major HAR readers accept this shape.',
+      inputSchema: {
+        ...networkFilterSchema,
+        path: z.string().optional(),
+        pretty: z.boolean().optional(),
+        tabId: z.string().optional(),
+      },
+    },
+    async (args: {
+      method?: string | string[];
+      status?: number | number[];
+      urlPattern?: string;
+      urlIncludes?: string;
+      mimeType?: string;
+      since?: string | number;
+      failedOnly?: boolean;
+      path?: string;
+      pretty?: boolean;
+      tabId?: string;
+    }) => {
+      const id = resolveTabId(args.tabId);
+      requireTab(id);
+      const all = recorder.getNetworkAll(id);
+      const filtered = filterNetworkEntries(all, args);
+      const har = toHar(filtered, defaultHarMeta());
+      const outPath = args.path && args.path.length > 0 ? args.path : defaultHarPath();
+      const result = await writeHar(outPath, har, args.pretty === true);
+      const startedIso =
+        filtered.length > 0
+          ? new Date(Math.min(...filtered.map((e) => e.startedAt))).toISOString()
+          : null;
+      const endedIso =
+        filtered.length > 0
+          ? new Date(
+              Math.max(...filtered.map((e) => e.endedAt ?? e.startedAt)),
+            ).toISOString()
+          : null;
+      return text({ ok: true, ...result, started_iso: startedIso, ended_iso: endedIso });
     },
     ),
   );
