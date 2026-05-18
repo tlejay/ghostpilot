@@ -4,273 +4,294 @@
   <img src="assets/icon.png" alt="GhostPilot icon" width="160" />
 </p>
 
-A Chrome-like Mac browser you actually use day-to-day, with an MCP server baked in so **Claude (or any MCP client) can pilot your everyday browsing**.
+> **v0.4.0** — see [CHANGELOG](./CHANGELOG.md). Latest: [GitHub Release](https://github.com/tlejay/ghostpilot/releases/tag/v0.4.0).
 
-Built with Electron 33 + React + TypeScript, Vite, and `@modelcontextprotocol/sdk`. From [madebytle.com](https://madebytle.com).
+## What is GhostPilot
 
-> **Status:** v0.2 — daily-driver-ready. Tabs, history, bookmarks, downloads, multi-profile, DevTools, raw CDP access, Chrome import, OAuth-secured remote control from Claude on iPhone/web, a self-learning skill registry, and a **57-tool MCP surface**.
-
-## Why
-
-Most "AI browsers" are sandboxed CDP shells aimed at headless automation. GhostPilot is the inverse: a real browser you keep open all day, with one extra superpower — Claude can see your tabs, navigate them, fill forms, take screenshots, query history, manage bookmarks, and watch downloads, through a typed MCP API.
-
-## Features
-
-- **Full Chromium** via Electron 33 — every site that runs in Chrome runs here
-- **Persistent sessions** — log in once (Facebook, Gmail, anything), close the app, reopen — still logged in. Cookies / localStorage / IndexedDB are kept under `Partitions/profile-<name>/`.
-- **Tabs** with `WebContentsView` (modern Electron API)
-- **Persistent history** (5,000 entries, per-profile JSON)
-- **Bookmarks** (deduped by URL, searchable)
-- **Downloads** with progress, cancel, reveal-in-Finder
-- **Multi-profile** — `AI_BROWSER_PROFILE=work` and `AI_BROWSER_PROFILE=personal` get separate cookies/storage
-- **DevTools** for the active page (`Cmd+Opt+I`)
-- **Import from Chrome** — bookmarks (JSON) and history (SQLite via sql.js), one click in the side panel or via MCP
-- **Update notifications** — checks GitHub releases (or your own manifest URL) on startup and nags through the MCP CLI banner until you upgrade
-- **Embedded MCP server** with optional bearer-token *or* full OAuth 2.1 + PKCE auth, **70 tools** (see [Tool surface](#tool-surface)) — including a raw `cdp_send` escape hatch giving full Chrome DevTools Protocol access, an **External Chrome** tool group (`ext_*`) that drives a separate Chrome instance over CDP (so one MCP server can pilot both the embedded tabs and an external Chrome profile, e.g. LINE Web in `~/.chrome-agent`), Playwright-style **stable selectors** (`get_by_role` / `get_by_text` / `get_by_label` / `get_by_test_id`) that resolve elements by semantic attributes — survives DOM refactors — and **HAR export** (`export_har`) for portable network captures openable in Chrome DevTools / Charles / Postman
-- **Mobile-ready connector** — pair with a tunnel (cloudflared / ngrok) and Claude on iPhone, iPad, or web can pilot this browser. No other Mac browser supports this today.
-- **Self-learning skill registry** — Claude can save proven step-by-step playbooks (`save_skill`) and replay them on the next run (`list_skills` / `get_skill`). Works across Claude Code CLI, Claude.ai web, and the Claude mobile app.
-- **Standard Chrome shortcuts** — `Cmd+T/W/L/R`, `Cmd+[/]`, `Cmd+B` for the side panel
-- **About + Open Source Licenses** windows accessible from the GhostPilot menu
-- **`ghost` Claude Code agent** — a project-level agent (`.claude/agents/ghost.md`) that ships with the repo. When you use Claude Code inside GhostPilot, `ghost` checks a skill index first, follows proven step-by-step playbooks for known tasks (e.g. navigating to a Facebook friend's profile), and writes a new skill automatically after completing an unfamiliar task — so every browser workflow gets faster over time. Clone the repo and you get it for free.
+GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 71-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
 
 ## Quick start
 
 ```bash
+# 1. install
 pnpm install
-pnpm assets          # generate icon.icns + notices.json (only needed before pnpm dist)
-pnpm patch-electron  # one-time: rebrand node_modules' Electron.app to GhostPilot
+
+# 2. dev (or `pnpm dist` to build a DMG, then install GhostPilot.app)
 pnpm dev
+# → window opens, MCP server boots on http://127.0.0.1:9223/mcp
+
+# 3. wire it into Claude CLI
+claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
+
+# 4. trivial MCP call — list tabs (returns the active tab GhostPilot opened to Google)
+curl -s -X POST http://127.0.0.1:9223/mcp \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}'
 ```
 
-> `pnpm dev` automatically runs `patch-electron` first, but the standalone command is handy after `pnpm install --force` resets the bundle.
+Expected response shape:
 
-The app opens with one tab on Google. The MCP server starts on `http://127.0.0.1:9223/mcp`.
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "content": [{"type": "text", "text": "{\"tabs\":[{\"id\":\"tab-1\",\"url\":\"https://www.google.com/\",\"title\":\"Google\",\"active\":true}]}"}]
+  }
+}
+```
 
-## Hook it up to Claude CLI
+5. Walk through a real end-to-end task in **[TUTORIAL.md](./TUTORIAL.md)** (capture a HAR of a Google search, extract the failed requests).
+
+## Tool surface (71)
+
+> Need fewer tools for a small client context window? Filter at startup with `GHOSTPILOT_TOOLS=core` (or any comma-separated list of categories) — see [Configuration](#configuration). `tool_categories` returns the live taxonomy.
+
+| Group | Count | Tools |
+|---|---|---|
+| Tabs | 10 | `list_tabs`, `new_tab`, `close_tab`, `activate_tab`, `navigate`, `go_back`, `go_forward`, `reload`, `stop`, `toggle_devtools` |
+| Page | 7 | `get_page_text`, `get_page_html`, `screenshot`, `evaluate`, `click`, `fill`, `wait_for_selector` |
+| Input | 3 | `press_key`, `type_text`, `hover` |
+| Locators (new in v0.4.0) | 4 | `get_by_role`, `get_by_text`, `get_by_label`, `get_by_test_id` — Playwright-style stable selectors |
+| Console | 2 | `list_console_messages`, `clear_console_messages` |
+| Network | 3 | `list_network_requests` (rich filters), `clear_network_requests`, `export_har` (HAR 1.2) |
+| Emulation | 3 | `emulate`, `clear_emulation`, `wait_for_text` |
+| Accessibility | 1 | `a11y_snapshot` |
+| Files / dialogs | 2 | `upload_file`, `handle_next_dialog` |
+| Performance | 3 | `performance_start_trace`, `performance_stop_trace`, `lighthouse_audit` |
+| CDP | 1 | `cdp_send` — raw Chrome DevTools Protocol passthrough |
+| History | 2 | `history_list`, `history_clear` |
+| Bookmarks | 3 | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove` |
+| Downloads | 4 | `downloads_list`, `downloads_cancel`, `downloads_reveal`, `downloads_clear` |
+| Media | 3 | `list_media`, `download_media`, `clear_media` |
+| Video downloader | 3 | `ytdlp_status`, `download_with_ytdlp`, `list_ytdlp_jobs` |
+| Chrome import | 3 | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
+| Skills | 4 | `list_skills`, `get_skill`, `save_skill`, `delete_skill` |
+| Desktop | 2 | `desktop_screenshot`, `set_window_bounds` |
+| External Chrome (`ext_*`) | 6 | `ext_list_tabs`, `ext_navigate`, `ext_evaluate`, `ext_click`, `ext_a11y_snapshot`, `ext_screenshot` |
+| Lifecycle | 3 | `stop`, `check_for_updates`, `tool_categories` (always on) |
+| **Total** | **71** | |
+
+Every tool that takes a `tabId` falls back to the active tab when omitted. The MCP server binds to `127.0.0.1` only.
+
+## Featured tools
+
+Sample requests are written as raw `curl` for portability. In practice you'll usually call them through Claude CLI or any MCP SDK.
+
+### `list_tabs` — what's open
 
 ```bash
-claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
+curl -s -X POST http://127.0.0.1:9223/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}'
 ```
 
-Then in any project, run `claude` and try:
+Response: `{ tabs: [{ id, url, title, active }] }`.
 
-> "Open three tabs about EV adoption in Thailand and summarise each."
-> "Bookmark the current page under the folder 'reading'."
-> "Show me my history from the last hour."
-> "Go to events.madebytle.com, screenshot it, and tell me what's on the homepage."
+### `navigate` — drive the active tab
 
-### Tool surface (70)
+```bash
+... '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"navigate","arguments":{"url":"https://madebytle.com"}}}'
+```
 
-| Group | Tools |
-|-------|-------|
-| Tabs (10) | `list_tabs`, `new_tab`, `close_tab`, `activate_tab`, `navigate`, `go_back`, `go_forward`, `reload`, `stop`, `toggle_devtools` |
-| Page (7) | `get_page_text`, `get_page_html`, `screenshot`, `evaluate`, `click`, `fill`, `wait_for_selector` |
-| Input (3) | `press_key`, `type_text`, `hover` |
-| Console (2) | `list_console_messages`, `clear_console_messages` |
-| Network (3) | `list_network_requests` — captured requests with rich filters (`method` scalar/array, `status` scalar/array, `urlPattern` substring or `/regex/flags`, `mimeType` substring, `since` ISO/epoch, `failedOnly` shortcut); `clear_network_requests`; `export_har` — dump the filtered capture to a HAR 1.2 file openable in Chrome DevTools / Charles / Postman (v1: no response body) |
-| Emulation (3) | `emulate` (device + UA + network), `clear_emulation`, `wait_for_text` |
-| Accessibility (1) | `a11y_snapshot` — semantic-tree dump for AI navigation |
-| Files / dialogs (2) | `upload_file`, `handle_next_dialog` |
-| Performance (3) | `performance_start_trace`, `performance_stop_trace`, `lighthouse_audit` |
-| CDP (1) | `cdp_send` — raw Chrome DevTools Protocol forwarder |
-| History (2) | `history_list`, `history_clear` |
-| Bookmarks (3) | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove` |
-| Downloads (4) | `downloads_list`, `downloads_cancel`, `downloads_reveal`, `downloads_clear` |
-| Media (3) | `list_media`, `download_media`, `clear_media` — sniffs video/audio/HLS/DASH on the active tab |
-| Video downloader (3) | `ytdlp_status`, `download_with_ytdlp`, `list_ytdlp_jobs` — downloads anything that plays in a browser tab |
-| Chrome import (3) | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
-| Skills (4) | `list_skills`, `get_skill`, `save_skill`, `delete_skill` — reusable browser-automation playbooks shared across every MCP client |
-| Desktop (2) | `desktop_screenshot` — capture the Mac desktop (system-level, outside the browser tab; needs Screen Recording TCC); `set_window_bounds` — resize/move the GhostPilot window (persists to `<userData>/window-bounds.json`) |
-| External Chrome (6) | `ext_list_tabs`, `ext_navigate`, `ext_evaluate`, `ext_click`, `ext_a11y_snapshot`, `ext_screenshot` — drive a SEPARATE Chrome process over CDP (raw WebSocket, via the `ws` package). All accept an optional `cdp_url` (default `http://127.0.0.1:9222`) and `target_id` (default = first page-type tab). Useful when a workflow needs a real Google profile / extension that GhostPilot's embedded session can't host (e.g. LINE Web in `~/.chrome-agent`). |
-| Locators (4) | `get_by_role`, `get_by_text`, `get_by_label`, `get_by_test_id` — Playwright-style stable selectors: resolve an element by semantic attributes (role + accessible name, visible text, form-control label, `data-testid`) and return a CSS selector you can pass to `click` / `fill` / `wait_for_selector`. Each tool waits up to `timeoutMs` (default 3000) for ≥1 match. Pairs with auto-retry (Plan #3): the returned selector stays usable across re-renders. Embedded only in v1 — `ext_get_by_*` deferred. |
-| Updates (1) | `check_for_updates` |
+Response: `{ ok: true, url, title }`. Implicit auto-wait for DOM-ready.
 
-Every tool that takes `tabId` falls back to the active tab when omitted.
+### `get_by_role` — Playwright-style locator (v0.4.0)
 
-#### How does this compare to chrome-devtools MCP?
+Resolve an element by semantic role + accessible name, get back a CSS selector you can hand to `click`/`fill`:
 
-GhostPilot is at full parity for the surfaces an LLM agent actually uses:
+```bash
+... '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_by_role","arguments":{"role":"button","name":"Search","timeoutMs":3000}}}'
+```
 
-1. **High-level wrappers** for the things you do daily: `click`, `fill`, `type_text`, `press_key`, `hover`, `screenshot`, `evaluate`, `wait_for_selector`, `wait_for_text`.
-2. **Capture buffers** matching chrome-devtools' `list_console_messages` and `list_network_requests` — backed by `webContents.on('console-message')` and `session.webRequest`, so they coexist with DevTools.
-3. **Friendly wrappers** for everything chrome-devtools ships separately:
-   - `a11y_snapshot` ← `Accessibility.getFullAXTree`
-   - `emulate` ← `Emulation.setDeviceMetricsOverride` + `setUserAgentOverride` + `Network.emulateNetworkConditions`
-   - `upload_file` ← `DOM.setFileInputFiles`
-   - `handle_next_dialog` ← `Page.javascriptDialogOpening` / `handleJavaScriptDialog`
-   - `performance_start_trace` / `performance_stop_trace` ← `Tracing.start`/`Tracing.end` + IO stream
-   - `lighthouse_audit` ← `lighthouse` package against the always-on remote-debugging port (default 9224)
-4. **Raw CDP escape hatch** via `cdp_send`. Anything chrome-devtools ever did is one tool call away — try `cdp_send method="Browser.getVersion"` to confirm.
+Response: `{ ok: true, count: 1, selector: "button[aria-label='Search']", role, name, matches: [...], waitedMs: 42 }`. Survives DOM refactors (selector synthesis prefers `data-testid` → `#id` → ARIA → tag attributes).
+
+### `click` — auto-retry + auto-wait (v0.4.0)
+
+```bash
+... '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"click","arguments":{"selector":"button[aria-label=\"Search\"]"}}}'
+```
+
+Response: `{ ok: true }`. Behind the scenes: waits for the box to be visible + stable, retries on transient DOM errors (node detached, frame detached, navigation interrupted) up to `retries:3` with backoff `[100, 300, 800]ms`. Opt-out with `{ retries: 1, wait_stable_ms: 0 }`.
+
+### `evaluate` — run JS in the page
+
+```bash
+... '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"evaluate","arguments":{"code":"document.title"}}}'
+```
+
+Response: `{ ok: true, result: "Google" }`. World is isolated from page scripts.
+
+### `list_network_requests` — capture filter (rich, v0.4.0)
+
+```bash
+... '{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"list_network_requests","arguments":{"failedOnly":true,"urlPattern":"/api/","since":"2026-05-18T00:00:00Z"}}}'
+```
+
+Filter axes (AND): `method`, `status` (scalar or array), `urlPattern` (substring or `/regex/flags`), `mimeType`, `since` (ISO or epoch ms), `failedOnly`. Per-entry shape includes `requestHeaders`/`responseHeaders`/`statusLine`/`mimeType`.
+
+### `export_har` — portable network capture (v0.4.0)
+
+```bash
+... '{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"export_har","arguments":{"failedOnly":true,"path":"/tmp/failures.har","pretty":true}}}'
+```
+
+Response: `{ ok: true, path: "/tmp/failures.har", entryCount: 12 }`. Open in Chrome DevTools → Network → "Import HAR…", or feed to Charles / Postman / k6.
+
+### `desktop_screenshot` — full Mac desktop (v0.4.0)
+
+```bash
+... '{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"desktop_screenshot","arguments":{"path":"/tmp/desktop.png"}}}'
+```
+
+Captures everything (any monitor, any window — not just GhostPilot's tab). Requires Screen Recording TCC for `/Applications/GhostPilot.app`.
+
+### `set_window_bounds` — programmatic move/resize (v0.4.0)
+
+```bash
+... '{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"set_window_bounds","arguments":{"x":40,"y":40,"width":1280,"height":900}}}'
+```
+
+Bounds persist across launches per profile (`<userData>/window-bounds.json`).
+
+### `ext_list_tabs` — drive a second, external Chrome (v0.4.0)
+
+Point GhostPilot at any Chrome started with `--remote-debugging-port=9222` (a separate profile, your real Chrome account, an authenticated LINE Web / Facebook session — anything the embedded session can't host):
+
+```bash
+... '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"ext_list_tabs","arguments":{"cdp_url":"http://127.0.0.1:9222"}}}'
+```
+
+`ext_click` dispatches a real CDP `Input.dispatchMouseEvent` so `event.isTrusted === true` — useful when a site gates handlers on trust.
+
+## Patterns
+
+### Click a button by visible name (Plan #2 + #3)
+
+```js
+// 1. resolve "โพสต์" button to a stable selector
+const { selector } = await mcp.call("get_by_role", { role: "button", name: "โพสต์" });
+
+// 2. click it — auto-waits + retries through DOM churn
+await mcp.call("click", { selector });
+```
+
+Why two steps: the locator returns a uniqueness-verified CSS selector, so a later `click`/`fill`/`wait_for_selector` keeps working even if the DOM re-renders.
+
+### Capture failing API calls on a page
+
+```js
+await mcp.call("clear_network_requests", {});
+await mcp.call("navigate", { url: "https://app.example.com/dashboard" });
+await mcp.call("wait_for_text", { text: "Loaded", timeoutMs: 10000 });
+
+const { entries } = await mcp.call("list_network_requests",
+  { failedOnly: true, urlPattern: "/api/" });
+
+await mcp.call("export_har",
+  { failedOnly: true, urlPattern: "/api/", path: "/tmp/failed-api.har" });
+```
+
+Full walkthrough in **[TUTORIAL.md](./TUTORIAL.md)**.
+
+### Drive an external Chrome profile (LINE Web)
+
+```js
+// Chrome was launched with: --user-data-dir=~/.chrome-agent --remote-debugging-port=9222
+const { tabs } = await mcp.call("ext_list_tabs", { cdp_url: "http://127.0.0.1:9222" });
+const lineTab  = tabs.find(t => t.url.startsWith("chrome-extension://"));
+await mcp.call("ext_a11y_snapshot", { cdp_url: "http://127.0.0.1:9222", target_id: lineTab.id });
+```
+
+The `ext_*` group is purpose-built for workflows that need an authenticated profile or extension the embedded GhostPilot session can't carry.
+
+## Modes
+
+GhostPilot runs in two modes, both serving the same MCP surface.
+
+| Mode | Window | Dock icon | Tools blocked |
+|---|---|---|---|
+| **Default** | visible | yes | none |
+| **Headless** | hidden (`show:false`) | hidden (`app.dock.hide()`) | `desktop_screenshot`, `set_window_bounds` return `{ok:false, error:"… headless mode …"}` |
+
+Enable headless via CLI flag (`--headless`) or env (`GHOSTPILOT_HEADLESS=1`). CLI wins if both are set. A line `[headless] enabled — main window hidden, dock icon hidden (darwin)` is printed at boot. See [plans/ghostpilot-headless.md](./plans/ghostpilot-headless.md) for the full design + CI workflow example.
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Electron main process                                      │
+│  ┌──────────────┐  ┌────────────┐  ┌──────────────────┐     │
+│  │ TabManager   │  │ Storage    │  │ MCP server       │     │
+│  │ · WebContents│  │ · history  │  │ · Express        │     │
+│  │   View       │  │ · bookmarks│  │ · StreamableHTTP │     │
+│  │ · partition  │  │ · downloads│  │ · OAuth 2.1+PKCE │     │
+│  │ · capture    │  │ · skills   │  │ · 71 tools       │     │
+│  └─────┬────────┘  └─────┬──────┘  └────────┬─────────┘     │
+│        │                 │                  │               │
+│        └─────────────────┼──────────────────┘               │
+│                          │ IPC                              │
+└──────────────────────────┼─────────────────────────────────┘
+                           │
+              ┌────────────▼────────────┐         ┌──────────────────────┐
+              │  Renderer (Vite)        │         │ External Chrome      │
+              │  index · about ·        │         │ (separate process)   │
+              │  licenses · newtab      │         │ CDP :9222            │
+              └─────────────────────────┘         │ ↑ ext_* tools        │
+                                                  └──────────────────────┘
+```
+
+- **Main process** (`src/main/`) — TabManager (`WebContentsView`), storage (per-profile atomic JSON), download tracking, the MCP server (`@modelcontextprotocol/sdk`, `StreamableHTTP` transport), About/Licenses windows.
+- **Preload** (`src/preload/`) — typed `window.api` via `contextBridge`. No `nodeIntegration`.
+- **Renderer** (`src/renderer/`) — three Vite entries: main UI, About, Licenses.
+- **MCP server** — singleton stores, stateless per-request `McpServer`, optional bearer-token or OAuth 2.1 + PKCE for remote Claude.ai connectors.
+- **External CDP** (`ext_*`) — talks raw CDP over WebSocket to any Chromium with `--remote-debugging-port` set. No second Electron process; it's just `ws` + the Chrome DevTools Protocol.
 
 ## Configuration
 
 | Env | Default | Purpose |
-|-----|---------|---------|
-| `AI_BROWSER_MCP_PORT` | `9223` | Port for the embedded MCP server |
-| `AI_BROWSER_MCP_TOKEN` | _unset_ | If set, `/mcp` requires `Authorization: Bearer <token>` |
-| `GHOSTPILOT_OAUTH_PASSWORD` | _unset_ | If set, the MCP server enables OAuth 2.1 + PKCE with this password gating the authorize step. Required for connecting Claude.ai web / iPhone over a tunnel. |
-| `AI_BROWSER_PROFILE` | `default` | Profile name (alphanumeric + `_-`, ≤32 chars). Each profile has isolated cookies, storage, history, bookmarks, and downloads. |
-| `AI_BROWSER_UPDATE_URL` | GitHub releases | Manifest URL for update checks. JSON shape: `{ "version": "0.3.0", "url": "...", "notes": "..." }`. Default uses the GitHub releases API. |
-| `AI_BROWSER_UPDATE_NAG` | `on` | Set to `off` to silence the update banner injected into MCP responses. |
-| `AI_BROWSER_DEBUG_PORT` | `9224` | Remote debugging port exposed to Lighthouse and any external CDP client. |
-| `GHOSTPILOT_TOOLS` | _unset_ (= `all`) | Comma-separated list of tool categories to expose. Trims the MCP `tools/list` payload so clients with smaller context windows aren't billed for tools they'll never call. See [Trimming the tool inventory](#trimming-the-tool-inventory) below. |
+|---|---|---|
+| `AI_BROWSER_MCP_PORT` | `9223` | Port for the embedded MCP server. |
+| `AI_BROWSER_MCP_TOKEN` | _unset_ | If set, `/mcp` requires `Authorization: Bearer <token>`. |
+| `GHOSTPILOT_OAUTH_PASSWORD` | _unset_ | Enables OAuth 2.1 + PKCE for Claude.ai web/mobile connectors. |
+| `AI_BROWSER_PROFILE` | `default` | Profile (≤32 chars, `[A-Za-z0-9_-]`). Separate cookies/storage/history/bookmarks/downloads. |
+| `AI_BROWSER_UPDATE_URL` | GitHub releases | Manifest URL for update checks. |
+| `AI_BROWSER_UPDATE_NAG` | `on` | Set to `off` to silence the update banner in MCP responses. |
+| `AI_BROWSER_DEBUG_PORT` | `9224` | Remote debugging port exposed to Lighthouse + external CDP clients. |
+| `GHOSTPILOT_TOOLS` | _unset_ (= `all`) | Comma-separated tool-category allowlist (e.g. `core` or `nav,interact,network` or `all,-ytdlp`). |
+| `GHOSTPILOT_HEADLESS` | _unset_ | `1` → hide window + dock icon. CLI flag `--headless` overrides. |
+| `GHOSTPILOT_EXT_CDP_PORT` | `9222` | Default external-Chrome CDP port for `ext_*` tools. |
 
-The MCP server binds to `127.0.0.1` only — no external access.
+Flag: `--headless` on the GhostPilot CLI (wins over the env var if both set).
 
-### Trimming the tool inventory
+Tokens in `GHOSTPILOT_TOOLS`: bare category enables it; `-name` subtracts; `all` is the default; `core` = `nav,tabs,interact,inspect`; unknown names log a `WARN` and are ignored. `lifecycle` (`stop`, `check_for_updates`, `tool_categories`) is always on. Call `tool_categories` to introspect what's enabled in the current process.
 
-GhostPilot exposes ~57 MCP tools by default. Clients that only need a slice (a scraping bot, a download-only helper, a screenshot harness) can opt into specific categories via `GHOSTPILOT_TOOLS`:
-
-```bash
-# Mint's default profile — page navigation + interaction + inspection (= 22 tools).
-GHOSTPILOT_TOOLS=core pnpm dev
-
-# Explicit category list (case-insensitive, whitespace tolerant).
-GHOSTPILOT_TOOLS=nav,interact,inspect,network pnpm dev
-
-# All except yt-dlp and lighthouse.
-GHOSTPILOT_TOOLS=all,-ytdlp,-performance pnpm dev
-```
-
-Tokens recognised in the env value:
-
-- bare category name → enable that category
-- `-name` → subtract that category
-- `all` → every category (the default when the var is unset)
-- `core` → shorthand for `nav,tabs,interact,inspect`
-- unknown name → logged as a `WARN`, ignored
-
-The `lifecycle` group (`stop`, `check_for_updates`, `tool_categories`) is always on regardless of the env var, so the operator can introspect or shut down the server.
-
-| Category | Tools |
-|---|---|
-| `nav` | `navigate`, `go_back`, `go_forward`, `reload` |
-| `tabs` | `list_tabs`, `new_tab`, `close_tab`, `activate_tab` |
-| `interact` | `click`, `fill`, `type_text`, `press_key`, `hover`, `upload_file`, `handle_next_dialog` |
-| `inspect` | `screenshot`, `get_page_text`, `get_page_html`, `a11y_snapshot`, `evaluate`, `wait_for_selector`, `wait_for_text` |
-| `network` | `list_network_requests`, `clear_network_requests` |
-| `console` | `list_console_messages`, `clear_console_messages` |
-| `performance` | `performance_start_trace`, `performance_stop_trace`, `lighthouse_audit` |
-| `media` | `list_media`, `download_media`, `clear_media` |
-| `ytdlp` | `download_with_ytdlp`, `list_ytdlp_jobs`, `ytdlp_status` |
-| `downloads` | `downloads_list`, `downloads_cancel`, `downloads_clear`, `downloads_reveal` |
-| `history` | `history_list`, `history_clear`, `import_chrome_history` |
-| `bookmarks` | `bookmarks_list`, `bookmarks_add`, `bookmarks_remove`, `import_chrome_bookmarks` |
-| `emulate` | `emulate`, `clear_emulation`, `toggle_devtools` |
-| `profiles` | `list_chrome_profiles` |
-| `skills` | `list_skills`, `save_skill`, `get_skill`, `delete_skill` |
-| `cdp` | `cdp_send` (raw Chrome DevTools Protocol passthrough) |
-| `lifecycle` | `stop`, `check_for_updates`, `tool_categories` (always on) |
-
-Call `tool_categories` at any time to see what's enabled in the current process and how many tools that translates to. Selection is resolved once at startup — restart the MCP server to apply a new env value.
-
-### Headless mode
-
-Run GhostPilot with no visible window and no dock icon — useful for CI jobs, scheduled tasks, and any background process that wants to drive the browser through MCP without surfacing UI.
+## Connect from Claude.ai (web / iPhone / iPad)
 
 ```bash
-# CLI flag (wins if both are set)
-/Applications/GhostPilot.app/Contents/MacOS/GhostPilot --headless
-
-# Or env var (handy for LaunchAgents / cron)
-GHOSTPILOT_HEADLESS=1 open -a "GhostPilot"
+export GHOSTPILOT_OAUTH_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)
+pnpm dev
+# in another terminal:
+brew install cloudflared
+cloudflared tunnel --url http://127.0.0.1:9223
+# → https://<random>.trycloudflare.com
 ```
 
-Defaults are unchanged — headless is opt-in. When enabled:
+In Claude.ai → Settings → Connectors → **Add custom connector**: paste `https://<your-tunnel>.trycloudflare.com/mcp`, leave Client ID/Secret blank (GhostPilot supports RFC 7591 dynamic client registration). On the next call, Claude opens a login page from the tunnel — enter the password. Tokens persist per-profile across restarts.
 
-- Main `BrowserWindow` is never shown; on macOS the dock icon is hidden (`app.dock.hide()`).
-- All page-rendering tools work normally (`screenshot`, `evaluate`, `get_page_text`, `a11y_snapshot`, `click`, `fill`, the full `network` / `console` / `locator` / `ext_*` surface).
-- Two GUI-bound tools return a structured `{ ok:false, error:"… headless mode …" }` instead of crashing:
-  - `desktop_screenshot` (captures the macOS screen — requires a GUI session)
-  - `set_window_bounds` (moves/resizes the chrome — no visible window to move)
-- A single line `[headless] enabled — main window hidden, dock icon hidden (darwin)` is printed at boot, visible in `/tmp/ghostpilot-dev.log` or `launchctl` stderr.
+> **Threat model.** Anyone with both the tunnel URL **and** the password gets full control of every tab + any logged-in session. Use a strong password, keep the tunnel down when idle, prefer named Cloudflare tunnels with Cloudflare Access for production.
 
-Tool count is unchanged (still **71**). Mode is resolved once at startup; relaunch to flip.
+## Releases + semver
 
-#### Sample CI workflow
-
-```yaml
-# .github/workflows/ghostpilot-smoke.yml
-name: GhostPilot headless smoke
-on: [push, pull_request]
-jobs:
-  smoke:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v3
-        with: { version: 9 }
-      - uses: actions/setup-node@v4
-        with: { node-version: 20, cache: pnpm }
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm assets
-      - run: pnpm dist
-      - name: Launch GhostPilot headless
-        run: |
-          ./release/mac-arm64/GhostPilot.app/Contents/MacOS/GhostPilot \
-            --headless > /tmp/ghostpilot.log 2>&1 &
-          for i in {1..20}; do
-            curl -fsS http://127.0.0.1:9223/health && break || sleep 1
-          done
-      - name: MCP smoke
-        run: curl -fsS http://127.0.0.1:9223/health
-```
-
-#### LaunchAgent opt-in
-
-```xml
-<key>EnvironmentVariables</key>
-<dict>
-  <key>GHOSTPILOT_HEADLESS</key>
-  <string>1</string>
-</dict>
-```
-
-### Switching profiles
+Tagged releases live on GitHub: <https://github.com/tlejay/ghostpilot/releases>. Pin to a specific version with:
 
 ```bash
-AI_BROWSER_PROFILE=work pnpm dev
-# or, after building:
-AI_BROWSER_PROFILE=personal open -a "GhostPilot"
-```
-
-### Auth-protected MCP (Claude Code CLI)
-
-```bash
-export AI_BROWSER_MCP_TOKEN=$(openssl rand -hex 24)
+git checkout v0.4.0
+pnpm install
 pnpm dev
 ```
 
-```bash
-claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp \
-  --header "Authorization: Bearer $AI_BROWSER_MCP_TOKEN"
-```
-
-### Connect from Claude.ai (web / iPhone / iPad)
-
-GhostPilot ships an OAuth 2.1 + PKCE provider so any MCP client that speaks OAuth — including Claude on every surface — can authorize and pilot the browser through a public tunnel.
-
-```bash
-# 1. Pick a strong password — it's the only thing gating remote control.
-export GHOSTPILOT_OAUTH_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)
-
-# 2. Boot GhostPilot.
-pnpm dev      # or open the installed app
-
-# 3. In another terminal, expose port 9223 over HTTPS.
-brew install cloudflared      # one-time
-cloudflared tunnel --url http://127.0.0.1:9223
-# → prints "https://<random>.trycloudflare.com"
-```
-
-In Claude.ai → Settings → Connectors → **Add custom connector**:
-
-- **Remote MCP server URL**: `https://<your-tunnel>.trycloudflare.com/mcp`
-- Leave Client ID / Secret blank — GhostPilot supports RFC 7591 dynamic client registration.
-
-On the next call, Claude opens a login page from your tunnel; type the password to authorize. Tokens persist across restarts (per-profile). The connector then syncs to the Claude mobile app, so iPhone can drive the browser too.
-
-> **Threat model.** Anyone who has both the tunnel URL **and** the password gets full control of every tab in this browser, including any logged-in sessions. Use a strong password, keep the tunnel down when not in use, and prefer named Cloudflare tunnels with Cloudflare Access on top for production setups.
+`main` may carry post-release work; tags are the supported surface. See [RELEASING.md](./RELEASING.md) for the cut-a-release runbook and semver guidance (the public contract is the **MCP tool surface** — new tool / new optional field = minor, removed/renamed/required-field-changed = major).
 
 ## Build a DMG
 
@@ -278,73 +299,40 @@ On the next call, Claude opens a login page from your tunnel; type the password 
 pnpm dist
 ```
 
-This regenerates the icon + license notices, builds the renderer, then runs electron-builder. Outputs `release/GhostPilot-<version>-arm64.dmg` and `-x64.dmg`.
-
-## About + Open Source Licenses
-
-GhostPilot ships with two legal-compliance windows reachable from the **GhostPilot** menu and the **Help** menu:
-
-- **About GhostPilot** — version, runtime info, link to madebytle.com, button to open the Licenses window.
-- **Open Source Licenses…** — a searchable list of every production package bundled in the app, with its license, author, homepage, and full license text. The list is generated at build time from `pnpm licenses list --prod --json` and shipped as `notices.json`.
-
-Generate the notices manually anytime with:
-
-```bash
-pnpm assets:licenses
-```
-
-## Architecture
-
-```
-┌────────────────────────────────────────────────────────┐
-│  Electron main process                                 │
-│  ┌──────────────┐  ┌─────────────┐  ┌──────────────┐   │
-│  │ TabManager   │  │ Storage     │  │ MCP server   │   │
-│  │  · Web-      │  │  · history  │  │  · Express   │   │
-│  │    Contents  │  │  · book-    │  │  · Stream-   │   │
-│  │    View      │  │    marks    │  │    ableHTTP  │   │
-│  │  · partition │  │  · downloads│  │  · OAuth 2.1 │   │
-│  │              │  │  · skills   │  │  · 57 tools  │   │
-│  └─────┬────────┘  └─────┬───────┘  └──────┬───────┘   │
-│        │                 │                 │           │
-│        └─────────────────┼─────────────────┘           │
-│                    IPC   │                             │
-└──────────────────────────┼─────────────────────────────┘
-                           │
-              ┌────────────▼────────────┐
-              │   Renderer (Vite)       │
-              │   index · about ·       │
-              │   licenses · newtab     │
-              └─────────────────────────┘
-```
-
-- **Main process** (`src/main/`) owns the window, tab manager, storage stores, downloads, MCP server, and About/Licenses windows.
-- **Preload** (`src/preload/`) exposes a typed `window.api` via `contextBridge`. No `nodeIntegration`. Tools, history, bookmarks, downloads, profile, and app metadata are namespaced.
-- **Renderer** (`src/renderer/`) has three Vite entry points: the main UI, About, and Licenses pages — each a standalone React app.
-- **MCP server** uses `StreamableHTTPServerTransport`, builds a fresh `McpServer` per request (stateless), and resolves all tools against singleton stores. Optional bearer-token middleware.
-- **Persistence**: per-profile JSON files at `~/Library/Application Support/GhostPilot/profiles/<profile>/`, written atomically through a serialized write queue.
-
-## Project structure
-
-```
-src/main/        # Electron main: tabs, storage, downloads, mcp/, legal windows
-src/preload/     # contextBridge → window.api (typed)
-src/renderer/    # 3 Vite entries: index.html, about.html, licenses.html
-assets/          # icon.svg, generated icon.icns + icon.png + notices.json
-scripts/         # make-icon.mjs, gather-licenses.mjs
-electron.vite.config.ts
-tsconfig.{json,node.json,web.json}
-```
-
-See `CLAUDE.md` for the full per-file map and contribution conventions.
+Regenerates icon + license notices, builds the renderer, runs electron-builder. Outputs `release/GhostPilot-<version>-arm64.dmg` and `-x64.dmg`.
 
 ## Contributing
 
 PRs welcome. Three rules:
 
-1. No `nodeIntegration: true` anywhere. All renderer ↔ main traffic goes through `contextBridge`.
-2. New MCP tools live in `src/main/mcp/tools.ts` with a Zod `inputSchema` and update both `README.md` and `CLAUDE.md`.
-3. New runtime dependencies must show up in the Licenses window — that's automatic if `pnpm assets:licenses` is run before shipping.
+1. No `nodeIntegration: true` anywhere — all renderer ↔ main traffic goes through `contextBridge`.
+2. New MCP tools live in `src/main/mcp/tools.ts` (or a sibling like `locator-tools.ts` / `har-export.ts` / `ext-cdp.ts` for groups) with a Zod `inputSchema`. Update [README.md](./README.md), [CLAUDE.md](./CLAUDE.md), and the relevant test in `src/main/mcp/tool-groups.integration.test.ts` (which asserts total count + per-category histogram).
+3. New runtime dependencies must show up in the Licenses window — automatic if `pnpm assets:licenses` runs before shipping.
+
+Dev loop:
+
+```bash
+pnpm install
+pnpm typecheck
+pnpm test:unit
+pnpm test:integration
+pnpm dev
+```
+
+Design docs live in `plans/`:
+
+- [plans/ghostpilot-stable-selectors.md](./plans/ghostpilot-stable-selectors.md) — Plan #2 (locators)
+- [plans/ghostpilot-har-network.md](./plans/ghostpilot-har-network.md) — Plan #6 (HAR + filters)
+- [plans/ghostpilot-headless.md](./plans/ghostpilot-headless.md) — Plan #4 (headless mode)
+
+See [CHANGELOG.md](./CHANGELOG.md) for what shipped where, and [CLAUDE.md](./CLAUDE.md) for the full per-file map + agent contribution conventions.
+
+## About + Open Source Licenses
+
+GhostPilot ships two legal-compliance windows reachable from the **GhostPilot** menu:
+
+- **About GhostPilot** — version, runtime info, link to madebytle.com.
+- **Open Source Licenses…** — searchable list of every production dep with license + author + homepage + full text. Generated at build time from `pnpm licenses list --prod --json` → `assets/notices.json`. Regenerate with `pnpm assets:licenses`.
 
 ## License
 
