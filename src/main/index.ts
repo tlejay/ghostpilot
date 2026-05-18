@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, shell } from 'electron';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { isHeadless } from './headless.js';
 
 // In dev mode the running Electron.app's CFBundleName is "Electron", which
 // makes the macOS menu bar show "Electron" instead of our productName. Set it
@@ -14,6 +15,17 @@ app.setName('GhostPilot');
 // AI_BROWSER_DEBUG_PORT if it conflicts with another tool.
 const debugPort = Number(process.env.AI_BROWSER_DEBUG_PORT ?? 9224);
 app.commandLine.appendSwitch('remote-debugging-port', String(debugPort));
+
+// Plan #4 headless mode — resolved once at module load (before whenReady)
+// so we can hide the dock icon before the app fully boots.
+const HEADLESS = isHeadless(process.argv, process.env);
+if (HEADLESS) {
+  // eslint-disable-next-line no-console
+  console.log(
+    `[headless] enabled — main window hidden${process.platform === 'darwin' ? ', dock icon hidden (darwin)' : ''}`,
+  );
+  if (process.platform === 'darwin') app.dock?.hide();
+}
 
 import {
   attachBoundsPersistence,
@@ -63,7 +75,7 @@ interface AppContext {
 
 let ctx: AppContext | null = null;
 
-function createMainWindow(saved: SavedBounds | null): BrowserWindow {
+function createMainWindow(saved: SavedBounds | null, headless = false): BrowserWindow {
   const win = new BrowserWindow({
     x: saved?.x,
     y: saved?.y,
@@ -83,7 +95,9 @@ function createMainWindow(saved: SavedBounds | null): BrowserWindow {
   });
 
   attachBoundsPersistence(win);
-  win.once('ready-to-show', () => win.show());
+  if (!headless) {
+    win.once('ready-to-show', () => win.show());
+  }
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (ctx) {
@@ -264,6 +278,9 @@ function configureAboutPanel(): void {
 
 function applyDockIcon(): void {
   if (process.platform !== 'darwin') return;
+  // Headless: we already called app.dock?.hide() at module load; do not set
+  // the icon (which would re-surface the dock entry).
+  if (HEADLESS) return;
   // In dev mode, the bundled .icns isn't applied; set the dock icon manually.
   if (app.isPackaged) return;
   const iconPath = join(__dirname, '../../assets/icon.png');
@@ -284,7 +301,7 @@ app.whenReady().then(async () => {
   const partition = partitionFor(profile);
 
   const savedBounds = await loadSavedBounds();
-  const window = createMainWindow(savedBounds);
+  const window = createMainWindow(savedBounds, HEADLESS);
   const history = new HistoryStore(profile);
   const bookmarks = new BookmarksStore(profile);
   const skills = new SkillsStore(profile);
@@ -358,6 +375,7 @@ app.whenReady().then(async () => {
     ytdlp,
     updateChecker,
     mainWindow: window,
+    headless: HEADLESS,
   });
   const authMode = oauthPassword
     ? token
@@ -373,7 +391,7 @@ app.whenReady().then(async () => {
   app.on('activate', async () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const reopenedBounds = await loadSavedBounds();
-      const win = createMainWindow(reopenedBounds);
+      const win = createMainWindow(reopenedBounds, HEADLESS);
       const rec = new Recorder();
       const s = session.fromPartition(partition);
       rec.attachNetwork(s);

@@ -164,6 +164,68 @@ The `lifecycle` group (`stop`, `check_for_updates`, `tool_categories`) is always
 
 Call `tool_categories` at any time to see what's enabled in the current process and how many tools that translates to. Selection is resolved once at startup — restart the MCP server to apply a new env value.
 
+### Headless mode
+
+Run GhostPilot with no visible window and no dock icon — useful for CI jobs, scheduled tasks, and any background process that wants to drive the browser through MCP without surfacing UI.
+
+```bash
+# CLI flag (wins if both are set)
+/Applications/GhostPilot.app/Contents/MacOS/GhostPilot --headless
+
+# Or env var (handy for LaunchAgents / cron)
+GHOSTPILOT_HEADLESS=1 open -a "GhostPilot"
+```
+
+Defaults are unchanged — headless is opt-in. When enabled:
+
+- Main `BrowserWindow` is never shown; on macOS the dock icon is hidden (`app.dock.hide()`).
+- All page-rendering tools work normally (`screenshot`, `evaluate`, `get_page_text`, `a11y_snapshot`, `click`, `fill`, the full `network` / `console` / `locator` / `ext_*` surface).
+- Two GUI-bound tools return a structured `{ ok:false, error:"… headless mode …" }` instead of crashing:
+  - `desktop_screenshot` (captures the macOS screen — requires a GUI session)
+  - `set_window_bounds` (moves/resizes the chrome — no visible window to move)
+- A single line `[headless] enabled — main window hidden, dock icon hidden (darwin)` is printed at boot, visible in `/tmp/ghostpilot-dev.log` or `launchctl` stderr.
+
+Tool count is unchanged (still **71**). Mode is resolved once at startup; relaunch to flip.
+
+#### Sample CI workflow
+
+```yaml
+# .github/workflows/ghostpilot-smoke.yml
+name: GhostPilot headless smoke
+on: [push, pull_request]
+jobs:
+  smoke:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v3
+        with: { version: 9 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm assets
+      - run: pnpm dist
+      - name: Launch GhostPilot headless
+        run: |
+          ./release/mac-arm64/GhostPilot.app/Contents/MacOS/GhostPilot \
+            --headless > /tmp/ghostpilot.log 2>&1 &
+          for i in {1..20}; do
+            curl -fsS http://127.0.0.1:9223/health && break || sleep 1
+          done
+      - name: MCP smoke
+        run: curl -fsS http://127.0.0.1:9223/health
+```
+
+#### LaunchAgent opt-in
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>GHOSTPILOT_HEADLESS</key>
+  <string>1</string>
+</dict>
+```
+
 ### Switching profiles
 
 ```bash

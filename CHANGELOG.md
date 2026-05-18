@@ -6,6 +6,43 @@ semver based on the `package.json` field.
 
 ## [Unreleased]
 
+### Added — Headless mode (plan #4)
+
+GhostPilot can now run with no visible window and no dock icon — useful for
+CI runners, scheduled jobs, and background scripts that drive the browser
+through MCP without surfacing UI.
+
+Two equivalent toggles (CLI flag wins if both are set):
+
+- `--headless` on the command line
+- `GHOSTPILOT_HEADLESS=1` in the environment
+
+When enabled:
+
+- The main `BrowserWindow` is created with `show:false` and the
+  `ready-to-show` handler skips `win.show()`.
+- On macOS, `app.dock?.hide()` runs before `whenReady`, so the dock icon
+  never flickers in.
+- All page-rendering tools work normally (`screenshot`, `evaluate`,
+  `get_page_text`, `a11y_snapshot`, `click`, `fill`, the full `locator` /
+  `network` / `ext_*` surface) — Chromium renders off-screen.
+- Two GUI-bound tools return a structured
+  `{ ok:false, error:"… headless mode …" }` instead of crashing:
+  - `desktop_screenshot` — captures the macOS screen, requires a GUI
+    session and Screen Recording TCC
+  - `set_window_bounds` — moves/resizes the chrome, needs a visible window
+- A single line `[headless] enabled — main window hidden, dock icon hidden
+  (darwin)` is printed at boot.
+
+Tool count is unchanged (still **71**); headless is a runtime mode, not a
+new category. Default behavior is unchanged — headless is purely opt-in.
+
+Implementation: pure `isHeadless(argv, env)` resolver in
+`src/main/headless.ts`; `createMainWindow()` takes a `headless` arg;
+`ToolDeps` gains an optional `headless?: boolean` that the two affected
+handlers read.
+Tests: 9 unit (`tests/unit/headless.test.ts`).
+
 ## [0.4.0] — 2026-05-18
 
 Release covers Plans #2 (stable selectors), #3 (auto-retry + auto-wait), and

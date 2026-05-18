@@ -47,6 +47,10 @@ export interface ToolDeps {
   /** The main app BrowserWindow — used by desktop-category tools that
    *  resize/move/inspect the chrome around the tabs. */
   mainWindow: BrowserWindow;
+  /** Plan #4 — true when the process booted with `--headless` or
+   *  `GHOSTPILOT_HEADLESS=1`. Desktop-category tools that intrinsically need
+   *  a visible GUI session early-return a typed error in this mode. */
+  headless?: boolean;
 }
 
 const text = (value: unknown) => ({
@@ -203,7 +207,11 @@ export function registerTools(
     ytdlp,
     updateChecker,
     mainWindow,
+    headless = false,
   } = deps;
+
+  const HEADLESS_ERROR =
+    'GhostPilot is running in headless mode; this tool requires a visible window';
 
   // Gate every server.registerTool() call behind a category check. Using a
   // thunk so each call site keeps direct access to server.registerTool's
@@ -1707,8 +1715,10 @@ export function registerTools(
           ),
       },
     },
-    async ({ path: outPath, display }) =>
-      text(await captureDesktopScreenshot({ path: outPath, display })),
+    async ({ path: outPath, display }) => {
+      if (headless) return text({ ok: false, error: HEADLESS_ERROR });
+      return text(await captureDesktopScreenshot({ path: outPath, display }));
+    },
     ),
   );
 
@@ -1734,6 +1744,7 @@ export function registerTools(
       },
     },
     async ({ x, y, width, height, center }) => {
+      if (headless) return text({ ok: false, error: HEADLESS_ERROR });
       if (mainWindow.isDestroyed()) {
         throw new Error('set_window_bounds: main window has been destroyed');
       }
