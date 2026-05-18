@@ -1693,6 +1693,188 @@ export function registerTools(
     ),
   );
 
+  // ── External Chrome (raw CDP over WS) ─────────────────────────────
+  // Drives a SEPARATE Chrome process (e.g. ~/.chrome-agent at :9222 used for
+  // LINE Chrome Web Store extension). Embedded tabs stay on the existing
+  // tools; these `ext_*` tools are a parallel surface keyed by `cdp_url`.
+  // Backend = raw CDP over WebSocket (same mental model as the embedded
+  // `webContents.debugger` path; no puppeteer-core needed).
+  tool('ext', () =>
+    server.registerTool(
+      'ext_list_tabs',
+      {
+        description:
+          'List tabs (pages, iframes, service workers, extension popups) of an EXTERNAL Chrome instance reachable via Chrome DevTools Protocol. Default cdp_url = http://127.0.0.1:9222.',
+        inputSchema: {
+          cdp_url: z.string().optional(),
+        },
+      },
+      async ({ cdp_url }) => {
+        const url = cdp_url ?? 'http://127.0.0.1:9222';
+        const { listExternalTabs } = await import('./ext-cdp.js');
+        const tabs = await listExternalTabs(url);
+        return text(tabs);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_navigate',
+      {
+        description:
+          'Navigate the target page of an external Chrome to a URL. If `target_id` is omitted, defaults to the first page-type tab (matches ext_list_tabs[0] of type=page).',
+        inputSchema: {
+          url: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ url, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = await session.send('Page.navigate', { url });
+        return text(r);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_evaluate',
+      {
+        description:
+          'Run JavaScript in the page context of an external Chrome target and return the value. Use a single expression or IIFE returning a JSON-serializable value.',
+        inputSchema: {
+          script: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ script, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = (await session.send('Runtime.evaluate', {
+          expression: script,
+          returnByValue: true,
+          awaitPromise: true,
+        })) as {
+          result?: { value?: unknown; description?: string };
+          exceptionDetails?: { text?: string; exception?: { description?: string } };
+        };
+        if (r.exceptionDetails) {
+          const msg =
+            r.exceptionDetails.exception?.description ??
+            r.exceptionDetails.text ??
+            'evaluate threw';
+          throw new Error(`ext_evaluate: ${msg}`);
+        }
+        return text(r.result?.value ?? null);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_click',
+      {
+        description:
+          'Click the first element matching the CSS selector inside an external Chrome target. Implementation = querySelector + element.click() via Runtime.evaluate (NOT a CDP-level trusted-event click; for trusted events use ext_evaluate with a custom dispatch).',
+        inputSchema: {
+          selector: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ selector, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const sel = JSON.stringify(selector);
+        const r = (await session.send('Runtime.evaluate', {
+          expression: `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+          returnByValue: true,
+        })) as { result?: { value?: { ok: boolean; error?: string } } };
+        return text(r.result?.value ?? null);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_a11y_snapshot',
+      {
+        description:
+          'Return a simplified accessibility tree (role, name, value, parentId, childIds) of the external Chrome target. Equivalent of a11y_snapshot but for the external session. Defaults interestingOnly=true (drops ignored/role-less nodes).',
+        inputSchema: {
+          interestingOnly: z.boolean().optional(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ interestingOnly, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const tree = (await session.send('Accessibility.getFullAXTree', {})) as {
+          nodes: Array<{
+            nodeId: string;
+            role?: { value: string };
+            name?: { value: string };
+            value?: { value: unknown };
+            ignored?: boolean;
+            childIds?: string[];
+            parentId?: string;
+          }>;
+        };
+        const useInteresting = interestingOnly !== false;
+        const slim = tree.nodes
+          .filter((n) => !useInteresting || (!n.ignored && (n.role?.value ?? 'none') !== 'none'))
+          .map((n) => ({
+            nodeId: n.nodeId,
+            role: n.role?.value,
+            name: n.name?.value,
+            value: n.value?.value,
+            parentId: n.parentId,
+            childIds: n.childIds,
+          }));
+        return text({ count: slim.length, nodes: slim });
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_screenshot',
+      {
+        description:
+          'PNG screenshot of an external Chrome target (default = first page). Returned as base64 image content. Uses CDP Page.captureScreenshot.',
+        inputSchema: {
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+          full_page: z.boolean().optional(),
+        },
+      },
+      async ({ cdp_url, target_id, full_page }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = (await session.send('Page.captureScreenshot', {
+          format: 'png',
+          captureBeyondViewport: full_page === true,
+        })) as { data?: string };
+        if (!r.data) throw new Error('ext_screenshot: empty payload');
+        return {
+          content: [
+            { type: 'image' as const, data: r.data, mimeType: 'image/png' },
+          ],
+        };
+      },
+    ),
+  );
+
   // ── Updates ───────────────────────────────────────────────────────
   tool('lifecycle', () =>
     server.registerTool(
