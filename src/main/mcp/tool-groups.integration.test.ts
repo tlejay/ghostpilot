@@ -25,14 +25,19 @@ import {
 } from './tool-groups.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const toolsSrc = readFileSync(join(here, 'tools.ts'), 'utf8');
+// tools.ts is the main registry, but some categories live in sibling modules
+// (e.g. locator-tools.ts hosts the 4 Plan #2 tools and is wired via a single
+// registerLocatorTools(...) call in tools.ts). Aggregate the histogram across
+// both files so the count is authoritative.
+const SOURCE_FILES = ['tools.ts', 'locator-tools.ts'];
+const allSrc = SOURCE_FILES.map((f) => readFileSync(join(here, f), 'utf8')).join('\n');
 
 // Match every `tool('cat', () =>` opener and tally per category.
 function buildHistogram(): Record<string, number> {
   const re = /^\s*tool\('([a-z]+)', \(\) =>/gm;
   const histo: Record<string, number> = {};
   let m: RegExpExecArray | null;
-  while ((m = re.exec(toolsSrc)) !== null) {
+  while ((m = re.exec(allSrc)) !== null) {
     const cat = m[1];
     histo[cat] = (histo[cat] ?? 0) + 1;
   }
@@ -58,12 +63,12 @@ test('histogram covers every category the source uses', () => {
   }
 });
 
-test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext)', () => {
+test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator)', () => {
   const histo = buildHistogram();
   const total = Object.values(histo).reduce((a, b) => a + b, 0);
   // 57 pre-existing tools + tool_categories (lifecycle) + desktop_screenshot
-  //  + set_window_bounds + 6 ext_* (external Chrome via CDP) = 66.
-  assert.equal(total, 66, `expected 66 total tool registrations, got ${total}`);
+  //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) = 70.
+  assert.equal(total, 70, `expected 70 total tool registrations, got ${total}`);
 });
 
 test('per-category counts match plan §3', () => {
@@ -87,6 +92,7 @@ test('per-category counts match plan §3', () => {
     cdp: 1,
     desktop: 2, // desktop_screenshot (2026-05-17) + set_window_bounds (2026-05-18)
     ext: 6, // ext_list_tabs + ext_navigate + ext_evaluate + ext_click + ext_a11y_snapshot + ext_screenshot (2026-05-18)
+    locator: 4, // get_by_role + get_by_text + get_by_label + get_by_test_id (Plan #2, 2026-05-18)
     lifecycle: 3, // stop + check_for_updates + tool_categories
   };
   for (const [cat, want] of Object.entries(expected)) {
@@ -99,12 +105,12 @@ test('per-category counts match plan §3', () => {
 });
 
 // §7.2 expected-count matrix.
-test('§7.2 row 1: unset → all 66 tools', () => {
-  assert.equal(expectedEnabled(undefined), 66);
+test('§7.2 row 1: unset → all 70 tools', () => {
+  assert.equal(expectedEnabled(undefined), 70);
 });
 
-test("§7.2 row 2: 'all' → all 66 tools", () => {
-  assert.equal(expectedEnabled('all'), 66);
+test("§7.2 row 2: 'all' → all 70 tools", () => {
+  assert.equal(expectedEnabled('all'), 70);
 });
 
 test("§7.2 row 3: 'core' → 22 (nav+tabs+interact+inspect) + 3 lifecycle = 25", () => {

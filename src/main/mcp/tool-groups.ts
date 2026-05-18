@@ -38,6 +38,7 @@ export type ToolCategory =
   | 'cdp'
   | 'desktop'
   | 'ext'
+  | 'locator'
   | 'lifecycle';
 
 export const ALL_CATEGORIES: readonly ToolCategory[] = [
@@ -59,6 +60,7 @@ export const ALL_CATEGORIES: readonly ToolCategory[] = [
   'cdp',
   'desktop',
   'ext',
+  'locator',
   'lifecycle',
 ] as const;
 

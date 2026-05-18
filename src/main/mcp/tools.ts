@@ -10,6 +10,7 @@ import {
   type ToolCategory,
 } from './tool-groups.js';
 import { withRetry, waitStable, isTransientError, type Box } from './auto-retry.js';
+import { registerLocatorTools } from './locator-tools.js';
 import { saveBounds as saveWindowBounds } from '../window-bounds.js';
 import type { BrowserWindow } from 'electron';
 import type { TabManager } from '../tab-manager.js';
@@ -1691,6 +1692,18 @@ export function registerTools(
       });
     },
     ),
+  );
+
+  // ── Locators (Playwright-style stable selectors, Plan #2) ─────────
+  // 4 tools (get_by_role / get_by_text / get_by_label / get_by_test_id) that
+  // resolve elements by semantic attributes and return a CSS selector + AX
+  // role/name. Lives in locator-tools.ts to keep this file readable.
+  registerLocatorTools(
+    server,
+    { tabManager },
+    tool,
+    resolveTabId,
+    requireTab,
   );
 
   // ── External Chrome (raw CDP over WS) ─────────────────────────────

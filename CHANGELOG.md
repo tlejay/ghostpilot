@@ -6,6 +6,33 @@ semver based on the `package.json` field.
 
 ## [Unreleased]
 
+### Added — Playwright-style stable selectors (plan #2)
+
+Four new MCP tools under the `locator` category that resolve elements by
+semantic attributes and return a CSS selector you can hand to existing
+mutating tools (`click`, `fill`, `wait_for_selector`):
+
+- `get_by_role` — match by ARIA role (explicit or implicit) + optional
+  accessible name (`name` substring or `nameRegex`)
+- `get_by_text` — match by visible text content (innermost element)
+- `get_by_label` — match a form control by its `<label for>`, `aria-label`,
+  or `aria-labelledby`
+- `get_by_test_id` — exact `data-testid` match
+
+Each tool polls every `pollIntervalMs` (default 100) and waits up to
+`timeoutMs` (default 3000) for at least one match. Returns `{ ok, count,
+selector, role, name, text, matches[≤5], waitedMs }`. Selector synthesis
+priority: `data-testid` → `#id` → `[aria-label][role]` → `tag[aria-label]`
+→ `tag[name]` → nth-child path. Uniqueness is verified via
+`document.querySelectorAll(...).length === 1` before returning.
+
+Embedded-only in v1; `ext_get_by_*` equivalents deferred until the
+embedded path proves out on Mint/mbt-store-bot workloads.
+
+Implementation: `src/main/mcp/locator-tools.ts`.
+Tests: 6 unit (`src/main/mcp/locator-tools.test.ts`) + integration counts
+updated in `tool-groups.integration.test.ts` (70 total tools, `locator: 4`).
+
 ### Added — auto-retry + auto-wait wrapper (plan #3)
 
 Six mutating MCP tools now auto-wait for the target element to be visible
