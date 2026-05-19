@@ -6,6 +6,14 @@ semver based on the `package.json` field.
 
 ## [Unreleased]
 
+_(empty)_
+
+## [0.5.0] — 2026-05-19
+
+Release covers Plan #4 (headless mode) and the Plan #11 docs rewrite
+(README restructured around new-user flow; new `TUTORIAL.md` end-to-end
+walkthrough).
+
 ### Added — Headless mode (plan #4)
 
 GhostPilot can now run with no visible window and no dock icon — useful for
