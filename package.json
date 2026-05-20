@@ -88,6 +88,14 @@
       {
         "from": "assets/notices.json",
         "to": "notices.json"
+      },
+      {
+        "from": "src/main/mcp/tools.ts",
+        "to": "src/main/mcp/tools.ts"
+      },
+      {
+        "from": "src/main/mcp/locator-tools.ts",
+        "to": "src/main/mcp/locator-tools.ts"
       }
     ],
     "asarUnpack": [

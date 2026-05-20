@@ -367,7 +367,8 @@ function runGenTypes(outPath: string): void {
   const candidateRoots = [
     join(__dirname, 'mcp'), // dev (out/main/mcp doesn't exist for source, but…)
     join(app.getAppPath(), 'src', 'main', 'mcp'), // dev pnpm-run path
-    join(__dirname, '..', '..', 'src', 'main', 'mcp'), // packaged .app path
+    join(__dirname, '..', '..', 'src', 'main', 'mcp'), // legacy packaged path
+    join(process.resourcesPath ?? '', 'src', 'main', 'mcp'), // packaged .app: Contents/Resources/src/main/mcp/
   ];
   let sources = '';
   for (const root of candidateRoots) {
