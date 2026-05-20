@@ -4,6 +4,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { registerTools, type RegistrationStats, type ToolDeps } from './tools.js';
 import { parseEnabledCategories } from './tool-groups.js';
 import { OAuthState } from './oauth.js';
+import pkg from '../../../package.json';
 
 interface StartOptions extends ToolDeps {
   port: number;
@@ -40,7 +41,7 @@ function buildServer(
   deps: ToolDeps,
   enabled: Set<import('./tool-groups.js').ToolCategory>,
 ): { server: McpServer; stats: RegistrationStats } {
-  const server = new McpServer({ name: 'ghostpilot', version: '0.2.0' });
+  const server = new McpServer({ name: 'ghostpilot', version: pkg.version });
   const stats = registerTools(withBannerInjection(server, deps), deps, enabled);
   return { server, stats };
 }
@@ -134,7 +135,7 @@ export async function startMcpServer(opts: StartOptions): Promise<void> {
     res.json({
       ok: true,
       name: 'ghostpilot',
-      version: '0.2.0',
+      version: pkg.version,
       profile: opts.profile,
       authRequired: Boolean(opts.token) || Boolean(oauth),
       oauth: Boolean(oauth),

@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { GhostIcon } from './components/GhostIcon';
 import './styles/legal.css';
+import pkg from '../../../package.json';
 
 interface AppInfo {
   name: string;
@@ -24,7 +25,7 @@ function About() {
       <div className="about">
         <GhostIcon size={132} />
         <h1 className="about-name">{info?.name ?? 'GhostPilot'}</h1>
-        <p className="about-version">Version {info?.version ?? '0.2.0'}</p>
+        <p className="about-version">Version {info?.version ?? pkg.version}</p>
         <p className="about-tagline">
           A Chrome-like Mac browser with an embedded MCP server, so Claude can pilot your
           everyday browsing.
