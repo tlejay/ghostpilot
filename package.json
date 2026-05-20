@@ -1,6 +1,6 @@
 {
   "name": "ghostpilot",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "GhostPilot — a Chrome-like Mac browser with an embedded MCP server, so Claude (or any MCP client) can pilot your everyday browsing.",
   "homepage": "https://madebytle.com",
@@ -30,6 +30,7 @@
     "patch-electron": "node scripts/patch-electron-dev.mjs",
     "pack": "pnpm run assets && electron-vite build && electron-builder --mac --dir",
     "dist": "pnpm run assets && electron-vite build && electron-builder --mac",
+    "gen:types": "electron-vite build && electron out/main/index.js --gen-types types/ghostpilot-tools.d.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
     "test": "pnpm run test:unit && pnpm run test:integration && pnpm run build && playwright test",
     "test:unit": "node --experimental-strip-types --test src/main/mcp/*.test.ts tests/unit/*.test.ts",

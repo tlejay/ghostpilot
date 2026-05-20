@@ -76,6 +76,8 @@ Expected response shape:
 
 Every tool that takes a `tabId` falls back to the active tab when omitted. The MCP server binds to `127.0.0.1` only.
 
+**TypeScript users:** every tool's input shape is declared in [`types/ghostpilot-tools.d.ts`](./types/ghostpilot-tools.d.ts), auto-generated from the MCP registry. Copy the file into your project, or fetch it directly from this repo. After changing any tool schema, run `pnpm gen:types` to regenerate (a unit test catches drift between source and the committed file).
+
 ## Featured tools
 
 Sample requests are written as raw `curl` for portability. In practice you'll usually call them through Claude CLI or any MCP SDK.

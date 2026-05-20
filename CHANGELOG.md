@@ -8,6 +8,46 @@ semver based on the `package.json` field.
 
 _(empty)_
 
+## [0.7.0] — 2026-05-20
+
+Release covers Plan #14 — auto-generated TypeScript declarations for every
+MCP tool. No new MCP tools; tool count stays at **76**. Build-time artifact;
+no behavior change at runtime.
+
+### Added — Auto-generated `.d.ts` for the MCP tool registry (plan #14)
+
+`types/ghostpilot-tools.d.ts` is now a committed, versioned artifact that
+declares every MCP tool's input shape — derived directly from the Zod
+schemas in `src/main/mcp/tools.ts` and `locator-tools.ts`. Consumers
+authoring TypeScript code against the MCP API (Mint scripts, future SDK
+wrappers, custom MCP clients) get:
+
+- One `<Pascal>Input` interface per tool, JSDoc'd with the tool description.
+- A `GhostPilotToolName` literal union of all 76 tool names (sorted).
+- A `GhostPilotToolCategory` literal union + `TOOL_CATEGORY` map.
+- A discriminated `GhostPilotToolCall` union — every `tools/call` payload
+  shape, ready for exhaustive switch statements.
+- A `GhostPilotToolMap` lookup interface `{ name: { input, output } }`.
+
+Output types are emitted as `unknown` in v1 (today's tools return
+`text(value)` with no schema; response schemas are a separate follow-up).
+
+Run `pnpm gen:types` after changing any tool schema — the build step
+re-emits the .d.ts deterministically (tools sorted alphabetically). A
+unit test (`tests/unit/dts-drift.test.ts`) catches drift on every
+`pnpm test:unit` by static-parsing the source vs the committed file.
+
+Implementation: `src/main/mcp/dts-generator.ts` (pure Zod walker — handles
+the 9 zod kinds tools.ts uses today: string, number, boolean, unknown,
+literal, enum, array, record, union, optional, nullable). `src/main/index.ts`
+gains a `--gen-types <path>` early-exit branch: no window, no MCP port,
+no IPC — it registers tools against a stub server, walks schemas, writes
+the file, then `app.exit(0)`. The generator is build-time only; no new
+MCP tool.
+
+Tests: 15 walker unit (`src/main/mcp/dts-generator.test.ts`) + 4 drift
+(`tests/unit/dts-drift.test.ts`).
+
 ## [0.6.0] — 2026-05-20
 
 Release covers Plan #5 (multi-profile MCP surface) — five new tools under the

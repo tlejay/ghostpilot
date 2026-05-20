@@ -1,7 +1,13 @@
 import { app, BrowserWindow, ipcMain, Menu, nativeImage, session, shell } from 'electron';
-import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { readdirSync, writeFileSync, mkdirSync } from 'node:fs';
+import { join, dirname } from 'node:path';
 import { isHeadless } from './headless.js';
+import { registerTools } from './mcp/tools.js';
+import {
+  generateDts,
+  type CapturedTool,
+  type ZodRawShape,
+} from './mcp/dts-generator.js';
 
 // In dev mode the running Electron.app's CFBundleName is "Electron", which
 // makes the macOS menu bar show "Electron" instead of our productName. Set it
@@ -24,6 +30,25 @@ if (HEADLESS) {
   console.log(
     `[headless] enabled — main window hidden${process.platform === 'darwin' ? ', dock icon hidden (darwin)' : ''}`,
   );
+  if (process.platform === 'darwin') app.dock?.hide();
+}
+
+// Plan #14 — `--gen-types <path>` early-exit branch. Boots Electron just far
+// enough to load tools.ts + registerTools, captures every server.registerTool
+// call against a stub server, walks the Zod schemas, writes a .d.ts file,
+// and exits. No window / no MCP port / no IPC.
+function parseGenTypesArg(argv: string[]): string | null {
+  const flagIdx = argv.indexOf('--gen-types');
+  if (flagIdx < 0) return null;
+  const next = argv[flagIdx + 1];
+  if (!next || next.startsWith('--')) {
+    console.error('[gen-types] --gen-types requires a path argument');
+    return null;
+  }
+  return next;
+}
+const GEN_TYPES_PATH = parseGenTypesArg(process.argv);
+if (GEN_TYPES_PATH) {
   if (process.platform === 'darwin') app.dock?.hide();
 }
 
@@ -292,7 +317,131 @@ function applyDockIcon(): void {
   }
 }
 
+function runGenTypes(outPath: string): void {
+  const fs = require('node:fs') as typeof import('node:fs');
+
+  // Capture every server.registerTool() call against a fake McpServer.
+  const captured: CapturedTool[] = [];
+
+  const fakeServer = {
+    registerTool: (
+      name: string,
+      def: { description?: string; inputSchema?: ZodRawShape },
+      _handler: unknown,
+    ) => {
+      captured.push({
+        name,
+        description: def?.description ?? '',
+        inputSchema: def?.inputSchema ?? {},
+      });
+      return { name };
+    },
+    close: async () => {},
+  };
+
+  // Stub deps — only need to satisfy structural typing; handlers never run
+  // (registration captures schemas only, no behavior is invoked).
+  const stubDeps = {
+    tabManager: {},
+    history: {},
+    bookmarks: {},
+    skills: {},
+    downloads: {},
+    recorder: {},
+    mediaDetector: {},
+    partitionSession: {},
+    ytdlp: {},
+    updateChecker: { banner: () => '' },
+    mainWindow: {},
+    headless: false,
+    profile: 'default',
+  } as unknown as Parameters<typeof registerTools>[1];
+
+  registerTools(fakeServer as never, stubDeps);
+
+  // Post-fill category from source (cheap regex; the tool() thunk's category
+  // arg is not exposed to fakeServer, but the source files are committed
+  // alongside the built bundle in dev). In a packaged .app this will resolve
+  // through `app.getAppPath()/src/main/mcp/*.ts` if present, otherwise leave
+  // category undefined — the generator gracefully omits the category map.
+  const candidateRoots = [
+    join(__dirname, 'mcp'), // dev (out/main/mcp doesn't exist for source, but…)
+    join(app.getAppPath(), 'src', 'main', 'mcp'), // dev pnpm-run path
+    join(__dirname, '..', '..', 'src', 'main', 'mcp'), // packaged .app path
+  ];
+  let sources = '';
+  for (const root of candidateRoots) {
+    for (const f of ['tools.ts', 'locator-tools.ts']) {
+      try {
+        sources += fs.readFileSync(join(root, f), 'utf8') + '\n';
+      } catch {
+        /* not present at this root — try next */
+      }
+    }
+    if (sources) break;
+  }
+  if (sources) {
+    const re = /tool\('([a-z]+)',\s*\(\)\s*=>\s*[\s\S]*?registerTool\(\s*'([a-z0-9_]+)'/g;
+    const nameToCat: Record<string, string> = {};
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sources)) !== null) nameToCat[m[2]] = m[1];
+    for (const t of captured) {
+      if (!t.category && nameToCat[t.name]) t.category = nameToCat[t.name];
+    }
+  }
+
+  // Read version from package.json so the banner reflects the build.
+  // Walk up from __dirname looking for the first package.json; covers both
+  // dev (out/main → ../.. = repo root) and packaged .app (Contents/Resources/app
+  // → app/package.json) layouts.
+  let version = '0.0.0';
+  const versionCandidates = [
+    join(__dirname, '..', '..', 'package.json'),
+    join(app.getAppPath(), 'package.json'),
+  ];
+  for (const p of versionCandidates) {
+    try {
+      const pkg = JSON.parse(fs.readFileSync(p, 'utf8')) as { version?: string };
+      if (pkg.version) {
+        version = pkg.version;
+        break;
+      }
+    } catch {
+      /* try next */
+    }
+  }
+
+  const { text, warnings } = generateDts(captured, {
+    version,
+    toolCount: captured.length,
+  });
+  for (const w of warnings) console.warn(`[gen-types] ${w}`);
+
+  try {
+    mkdirSync(dirname(outPath), { recursive: true });
+  } catch {
+    /* already exists */
+  }
+  writeFileSync(outPath, text, 'utf8');
+  console.log(
+    `[gen-types] wrote ${captured.length} tools → ${outPath} (${text.length} bytes)`,
+  );
+}
+
+if (GEN_TYPES_PATH) {
+  app.whenReady().then(() => {
+    try {
+      runGenTypes(GEN_TYPES_PATH);
+      app.exit(0);
+    } catch (err) {
+      console.error('[gen-types] fatal:', err);
+      app.exit(1);
+    }
+  });
+}
+
 app.whenReady().then(async () => {
+  if (GEN_TYPES_PATH) return; // gen-types branch handled the lifecycle
   registerIpc();
   configureAboutPanel();
   applyDockIcon();
