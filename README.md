@@ -8,7 +8,7 @@
 
 ## What is GhostPilot
 
-GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 71-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
+GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 76-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history/profiles, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
 
 ## Quick start
 
@@ -44,7 +44,7 @@ Expected response shape:
 
 5. Walk through a real end-to-end task in **[TUTORIAL.md](./TUTORIAL.md)** (capture a HAR of a Google search, extract the failed requests).
 
-## Tool surface (71)
+## Tool surface (76)
 
 > Need fewer tools for a small client context window? Filter at startup with `GHOSTPILOT_TOOLS=core` (or any comma-separated list of categories) — see [Configuration](#configuration). `tool_categories` returns the live taxonomy.
 
@@ -67,11 +67,12 @@ Expected response shape:
 | Media | 3 | `list_media`, `download_media`, `clear_media` |
 | Video downloader | 3 | `ytdlp_status`, `download_with_ytdlp`, `list_ytdlp_jobs` |
 | Chrome import | 3 | `list_chrome_profiles`, `import_chrome_bookmarks`, `import_chrome_history` |
+| GhostPilot profiles (new in v0.6.0) | 5 | `list_ghostpilot_profiles`, `current_ghostpilot_profile`, `create_ghostpilot_profile`, `delete_ghostpilot_profile`, `switch_ghostpilot_profile` |
 | Skills | 4 | `list_skills`, `get_skill`, `save_skill`, `delete_skill` |
 | Desktop | 2 | `desktop_screenshot`, `set_window_bounds` |
 | External Chrome (`ext_*`) | 6 | `ext_list_tabs`, `ext_navigate`, `ext_evaluate`, `ext_click`, `ext_a11y_snapshot`, `ext_screenshot` |
 | Lifecycle | 3 | `stop`, `check_for_updates`, `tool_categories` (always on) |
-| **Total** | **71** | |
+| **Total** | **76** | |
 
 Every tool that takes a `tabId` falls back to the active tab when omitted. The MCP server binds to `127.0.0.1` only.
 
@@ -226,7 +227,7 @@ Enable headless via CLI flag (`--headless`) or env (`GHOSTPILOT_HEADLESS=1`). CL
 │  │ · WebContents│  │ · history  │  │ · Express        │     │
 │  │   View       │  │ · bookmarks│  │ · StreamableHTTP │     │
 │  │ · partition  │  │ · downloads│  │ · OAuth 2.1+PKCE │     │
-│  │ · capture    │  │ · skills   │  │ · 71 tools       │     │
+│  │ · capture    │  │ · skills   │  │ · 76 tools       │     │
 │  └─────┬────────┘  └─────┬──────┘  └────────┬─────────┘     │
 │        │                 │                  │               │
 │        └─────────────────┼──────────────────┘               │

@@ -63,12 +63,13 @@ test('histogram covers every category the source uses', () => {
   }
 });
 
-test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator + 1 har)', () => {
+test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator + 1 har + 5 ghostpilot-profile)', () => {
   const histo = buildHistogram();
   const total = Object.values(histo).reduce((a, b) => a + b, 0);
   // 57 pre-existing tools + tool_categories (lifecycle) + desktop_screenshot
-  //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) + export_har (Plan #6) = 71.
-  assert.equal(total, 71, `expected 71 total tool registrations, got ${total}`);
+  //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) + export_har (Plan #6)
+  //  + 5 ghostpilot-profile tools (Plan #5: list/current/create/delete/switch) = 76.
+  assert.equal(total, 76, `expected 76 total tool registrations, got ${total}`);
 });
 
 test('per-category counts match plan §3', () => {
@@ -87,7 +88,7 @@ test('per-category counts match plan §3', () => {
     history: 3,
     bookmarks: 4,
     emulate: 3,
-    profiles: 1,
+    profiles: 6, // list_chrome_profiles + 5 ghostpilot-profile tools (Plan #5: list/current/create/delete/switch)
     skills: 4,
     cdp: 1,
     desktop: 2, // desktop_screenshot (2026-05-17) + set_window_bounds (2026-05-18)
@@ -105,12 +106,12 @@ test('per-category counts match plan §3', () => {
 });
 
 // §7.2 expected-count matrix.
-test('§7.2 row 1: unset → all 71 tools', () => {
-  assert.equal(expectedEnabled(undefined), 71);
+test('§7.2 row 1: unset → all 76 tools', () => {
+  assert.equal(expectedEnabled(undefined), 76);
 });
 
-test("§7.2 row 2: 'all' → all 71 tools", () => {
-  assert.equal(expectedEnabled('all'), 71);
+test("§7.2 row 2: 'all' → all 76 tools", () => {
+  assert.equal(expectedEnabled('all'), 76);
 });
 
 test("§7.2 row 3: 'core' → 22 (nav+tabs+interact+inspect) + 3 lifecycle = 25", () => {

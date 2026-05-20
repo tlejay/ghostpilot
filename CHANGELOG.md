@@ -8,6 +8,58 @@ semver based on the `package.json` field.
 
 _(empty)_
 
+## [0.6.0] — 2026-05-20
+
+Release covers Plan #5 (multi-profile MCP surface) — five new tools under the
+existing `profiles` category that wrap GhostPilot's per-profile session isolation
+(cookies / localStorage / history / bookmarks / skills / downloads / oauth all
+already partition by `AI_BROWSER_PROFILE` at boot).
+
+### Added — Multi-profile MCP tools (plan #5)
+
+GhostPilot supports per-profile isolation at boot via `AI_BROWSER_PROFILE`
+since v0.1; v0.6.0 exposes the lifecycle so MCP clients can manage profiles
+without leaving the session.
+
+Five new tools under the existing `profiles` category:
+
+- `list_ghostpilot_profiles` — return every profile on disk plus the active
+  one (sorted first); each entry carries `sizeBytes` + `lastModified`.
+- `current_ghostpilot_profile` — `{ name, partition, userDataDir }` for the
+  process this MCP call is running in.
+- `create_ghostpilot_profile { name }` — idempotent; returns
+  `{ ok:true, created:false }` if the profile dir already existed.
+- `delete_ghostpilot_profile { name, force? }` — refuses with a typed error
+  when `name === active`; refuses the literal `default` profile unless
+  `force:true`; returns `{ ok:false, error:"profile not found" }` for unknown
+  names. No-op on the active session partition.
+- `switch_ghostpilot_profile { name }` — **relaunches** GhostPilot with the
+  new profile via `app.relaunch + app.exit(0)`. The MCP response flushes
+  before the 200 ms exit timer fires, so callers get `{ ok:true, relaunching:true, name }`
+  before the connection drops. Reconnect after ~3 s. Passing the active
+  profile is a no-op (`relaunching:false`).
+
+Name validation is shared across all five tools (and matches the existing
+boot-time regex): `[a-zA-Z0-9_-]{1,32}`. Path traversal (`../escape`, slashes,
+spaces) and oversized names are rejected with caller-facing errors.
+
+Tool count is **71 → 76**; `profiles` category goes 1 → 6 (the existing
+`list_chrome_profiles` stays unchanged). All other categories untouched.
+
+Non-goals deferred to v2:
+- UI dropdown in `AddressBar.tsx` / SidePanel (renderer-only follow-up)
+- Per-tab profiles within one window (Electron sessions are bound at WCV
+  creation; deeper TabManager change)
+- `clone_profile` (`cp -R` works from the shell)
+- Auto-detect orphan profiles at boot
+
+Implementation: `src/main/profile-manager.ts` (pure-ish lifecycle helpers,
+filesystem-only; `userDataDir`-parameterized so tests can use a tmp dir);
+five new tool registrations in `src/main/mcp/tools.ts`; `ToolDeps` gains
+optional `profile?: string`.
+Tests: 25 unit (`tests/unit/profile-manager.test.ts` — validator + listProfiles +
+currentProfile + createProfile + deleteProfile + validateSwitchRequest).
+
 ## [0.5.0] — 2026-05-19
 
 Release covers Plan #4 (headless mode) and the Plan #11 docs rewrite

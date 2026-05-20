@@ -1,7 +1,7 @@
 import { promises as fsp } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { desktopCapturer, screen, systemPreferences } from 'electron';
+import { app, desktopCapturer, screen, systemPreferences } from 'electron';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import {
@@ -31,6 +31,13 @@ import type { YtdlpManager } from '../ytdlp.js';
 import { detectYtdlp } from '../ytdlp.js';
 import type { UpdateChecker } from '../update-checker.js';
 import { importBookmarks, importHistory, findChromeProfiles } from '../chrome-import.js';
+import {
+  listProfiles as listGhostpilotProfiles,
+  currentProfile as currentGhostpilotProfile,
+  createProfile as createGhostpilotProfile,
+  deleteProfile as deleteGhostpilotProfile,
+  validateSwitchRequest as validateGhostpilotSwitchRequest,
+} from '../profile-manager.js';
 import type { Session } from 'electron';
 
 export interface ToolDeps {
@@ -51,6 +58,11 @@ export interface ToolDeps {
    *  `GHOSTPILOT_HEADLESS=1`. Desktop-category tools that intrinsically need
    *  a visible GUI session early-return a typed error in this mode. */
   headless?: boolean;
+  /** Plan #5 — the profile name the current process is running as. Used by
+   *  the new GhostPilot profile-management tools (list/current/create/delete/
+   *  switch) to know which profile is active. Mirror of `process.env.AI_BROWSER_PROFILE`
+   *  resolved at boot (`src/main/profile.ts → getActiveProfile`). */
+  profile?: string;
 }
 
 const text = (value: unknown) => ({
@@ -208,6 +220,7 @@ export function registerTools(
     updateChecker,
     mainWindow,
     headless = false,
+    profile: activeProfile = 'default',
   } = deps;
 
   const HEADLESS_ERROR =
@@ -1012,6 +1025,89 @@ export function registerTools(
       inputSchema: {},
     },
     async () => text(await findChromeProfiles()),
+    ),
+  );
+
+  // ── GhostPilot profile management (Plan #5) ───────────────────────
+  tool('profiles', () =>
+    server.registerTool(
+      'list_ghostpilot_profiles',
+    {
+      description:
+        'List GhostPilot browser profiles on disk (cookies/storage/history isolated per profile). The active profile is sorted first and flagged. Each entry includes sizeBytes + lastModified.',
+      inputSchema: {},
+    },
+    async () => text(listGhostpilotProfiles(app.getPath('userData'), activeProfile)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'current_ghostpilot_profile',
+    {
+      description:
+        'Return the name of the GhostPilot profile this process is running as, plus its session partition string and per-profile userData directory.',
+      inputSchema: {},
+    },
+    async () => text(currentGhostpilotProfile(app.getPath('userData'), activeProfile)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'create_ghostpilot_profile',
+    {
+      description:
+        'Create a new GhostPilot profile (idempotent — returns created:false if it already existed). Profile name must match [a-zA-Z0-9_-]{1,32}. The new profile starts empty; storage is populated on first use after a switch.',
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => text(await createGhostpilotProfile(app.getPath('userData'), name)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'delete_ghostpilot_profile',
+    {
+      description:
+        'Delete a GhostPilot profile directory from disk. Refuses when the name equals the active profile. Refuses to delete the literal "default" profile unless force:true (default is the implicit fallback). Returns {ok:false, error} on refusal.',
+      inputSchema: { name: z.string(), force: z.boolean().optional() },
+    },
+    async ({ name, force }) =>
+      text(
+        await deleteGhostpilotProfile(app.getPath('userData'), name, {
+          activeName: activeProfile,
+          force,
+        }),
+      ),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'switch_ghostpilot_profile',
+    {
+      description:
+        'Switch the GhostPilot profile. RELAUNCHES the process — the MCP connection will drop, reconnect after ~3s. If `name` equals the active profile, returns immediately without relaunching. Profile name must match [a-zA-Z0-9_-]{1,32}.',
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => {
+      const req = validateGhostpilotSwitchRequest(name, activeProfile);
+      if (!req.ok || !req.relaunching) return text(req);
+      // Schedule the relaunch *after* this response flushes. The HTTP transport
+      // serializes res.write+res.end before we return; the 200ms timer gives
+      // TCP a generous window to flush before the process exits.
+      setTimeout(() => {
+        try {
+          process.env['AI_BROWSER_PROFILE'] = req.name!;
+          app.relaunch({ args: process.argv.slice(1) });
+          app.exit(0);
+        } catch (err) {
+          console.error('[switch_ghostpilot_profile] relaunch failed:', err);
+        }
+      }, 200);
+      return text(req);
+    },
     ),
   );
 
