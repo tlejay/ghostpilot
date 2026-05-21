@@ -8,6 +8,56 @@ semver based on the `package.json` field.
 
 _(empty)_
 
+## [0.8.0] — 2026-05-21
+
+Adds the `hide_facebook_chat` MCP tool (closes [#2](https://github.com/tlejay/ghostpilot/issues/2)).
+Tool count: **76 → 77**.
+
+### Added — `hide_facebook_chat` MCP tool
+
+New `interact`-category tool that visually hides Facebook Messenger chat
+popout overlays on a specific tab so they do not occlude automation click
+targets (e.g. the FB group Post button).
+
+**Why it exists:** Messenger chat bubbles render as fixed-position overlays
+in the viewport bottom-right. Chromium's hit-test routes CDP-originated
+clicks to the topmost element — meaning a popout avatar absorbs the click
+instead of the button underneath it. Every project that automates FB had to
+work around this independently. `hide_facebook_chat` bakes the fix into
+GhostPilot so any client opts out with one call.
+
+**How it works:** CSS `display:none` injection — no network requests are
+blocked and Messenger.com continues to work normally on other tabs. The
+injection persists across in-page navigations via
+`Page.addScriptToEvaluateOnNewDocument`; the hook is removed when
+`mode:"off"` is called.
+
+**Signature:**
+
+```typescript
+hide_facebook_chat({
+  tab_id?: string,          // defaults to active tab
+  mode: 'block' | 'off',
+  scope?: 'popouts'         // default — hides chat bubbles + dialogs only
+        | 'full_sidebar',   // also hides the right-rail Contacts sidebar
+})
+// Returns: { ok: true, mode, scope?, applied_selectors?, removed? }
+```
+
+**Example:**
+
+```javascript
+// Hide popouts before clicking Post
+await mcp.call('hide_facebook_chat', { tab_id: fbTabId, mode: 'block' });
+await mcp.call('click', { selector: '[aria-label="Post"]', tab_id: fbTabId });
+
+// Restore chat when done
+await mcp.call('hide_facebook_chat', { tab_id: fbTabId, mode: 'off' });
+```
+
+Types regenerated: `types/ghostpilot-tools.d.ts` now includes
+`HideFacebookChatInput` + updated `GhostPilotToolName` union (77 entries).
+
 ## [0.7.0] — 2026-05-20
 
 Release covers Plan #14 — auto-generated TypeScript declarations for every

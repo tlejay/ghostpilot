@@ -2079,6 +2079,96 @@ export function registerTools(
     ),
   );
 
+  // ── FB Chat overlay hide (plan #15 / issue #2) ────────────────────
+  // Per-tab state: tabId → Page.addScriptToEvaluateOnNewDocument identifier.
+  // Scoped inside registerTools so it is reset on MCP server restart.
+  const fbChatHideState = new Map<string, string>();
+
+  tool('interact', () =>
+    server.registerTool(
+      'hide_facebook_chat',
+      {
+        description:
+          'Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). ' +
+          'Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. ' +
+          'mode:"block" injects the CSS immediately and persists it across in-page navigations via Page.addScriptToEvaluateOnNewDocument. ' +
+          'mode:"off" removes both the live style tag and the navigation hook. ' +
+          'scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar.',
+        inputSchema: {
+          tab_id: z.string().optional(),
+          mode: z.enum(['block', 'off']),
+          scope: z.enum(['popouts', 'full_sidebar']).optional(),
+        },
+      },
+      async ({ tab_id, mode, scope = 'popouts' }) => {
+        const id = resolveTabId(tab_id);
+        requireTab(id);
+
+        if (mode === 'off') {
+          const scriptId = fbChatHideState.get(id);
+          if (scriptId) {
+            await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
+              identifier: scriptId,
+            });
+            fbChatHideState.delete(id);
+          }
+          await tabManager.evaluate(
+            id,
+            `(function(){var e=document.getElementById('__ghostpilot_fb_hide__');if(e)e.remove();})()`,
+          );
+          return text({ ok: true, mode: 'off', removed: !!scriptId });
+        }
+
+        // mode === 'block'
+        const popoutSelectors = [
+          '[aria-label*="บทสนทนาที่เปิดอยู่กับ" i]',
+          '[aria-label*="Conversation with" i]',
+          'div[role="dialog"][aria-labelledby*="messenger" i]',
+          'div[aria-label*="messenger" i][role="dialog"]',
+        ];
+        const sidebarSelectors = [
+          '[aria-label*="Contacts" i]',
+          '[aria-label*="รายชื่อ" i]',
+        ];
+
+        const appliedSelectors =
+          scope === 'full_sidebar'
+            ? [...popoutSelectors, ...sidebarSelectors]
+            : popoutSelectors;
+
+        const css = appliedSelectors.join(',\n') + ' { display: none !important; }';
+        // Self-contained IIFE so it is safe both as evaluate() arg and as the
+        // addScriptToEvaluateOnNewDocument source (runs before any page script).
+        const injectIIFE = `(function(){
+  var STYLE_ID='__ghostpilot_fb_hide__';
+  var el=document.getElementById(STYLE_ID);
+  if(!el){el=document.createElement('style');el.id=STYLE_ID;(document.head||document.documentElement).appendChild(el);}
+  el.textContent=${JSON.stringify(css)};
+})();`;
+
+        // 1. Apply immediately to the live document.
+        await tabManager.evaluate(id, injectIIFE);
+
+        // 2. Re-apply after every in-page navigation (SPA route changes etc.).
+        const oldId = fbChatHideState.get(id);
+        if (oldId) {
+          // Remove stale hook before adding the new one.
+          await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
+            identifier: oldId,
+          });
+        }
+        const hookResult = (await tabManager.cdpSend(
+          id,
+          'Page.addScriptToEvaluateOnNewDocument',
+          { source: injectIIFE },
+        )) as { identifier: string };
+        fbChatHideState.set(id, hookResult.identifier);
+
+        return text({ ok: true, mode: 'block', scope, applied_selectors: appliedSelectors });
+      },
+    ),
+  );
+
   // ── Updates ───────────────────────────────────────────────────────
   tool('lifecycle', () =>
     server.registerTool(

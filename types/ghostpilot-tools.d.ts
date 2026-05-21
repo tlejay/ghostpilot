@@ -1,7 +1,7 @@
 // AUTO-GENERATED — do not edit by hand. Regenerate with `pnpm gen:types`.
 // Source: src/main/mcp/tools.ts + src/main/mcp/locator-tools.ts
 // GhostPilot version: 0.7.0
-// Tools captured: 76
+// Tools captured: 77
 
 /** Return a simplified accessibility tree for the page (role, name, value, focusable). Equivalent to chrome-devtools take_snapshot — useful for letting an LLM navigate by semantic role instead of CSS selectors. */
 export interface A11ySnapshotInput { interestingOnly?: boolean; tabId?: string }
@@ -178,6 +178,10 @@ export type GoForwardOutput = unknown;
 /** Auto-respond to the next native JavaScript dialog (alert / confirm / prompt / beforeunload). Default behaviour is "accept". Use "dismiss" to cancel. promptText is sent to prompt() dialogs. */
 export interface HandleNextDialogInput { accept?: boolean; promptText?: string; timeoutMs?: number; tabId?: string }
 export type HandleNextDialogOutput = unknown;
+
+/** Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. mode:"block" injects the CSS immediately and persists it across in-page navigations via Page.addScriptToEvaluateOnNewDocument. mode:"off" removes both the live style tag and the navigation hook. scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar. */
+export interface HideFacebookChatInput { tab_id?: string; mode: "block" | "off"; scope?: "popouts" | "full_sidebar" }
+export type HideFacebookChatOutput = unknown;
 
 /** Clear all browser history for this profile. */
 export type HistoryClearInput = Record<string, never>;
@@ -358,6 +362,7 @@ export type GhostPilotToolName =
   | 'go_back'
   | 'go_forward'
   | 'handle_next_dialog'
+  | 'hide_facebook_chat'
   | 'history_clear'
   | 'history_list'
   | 'hover'
@@ -460,6 +465,7 @@ export const TOOL_CATEGORY: { readonly [K in GhostPilotToolName]: GhostPilotTool
   go_back: 'nav',
   go_forward: 'nav',
   handle_next_dialog: 'interact',
+  hide_facebook_chat: 'interact',
   history_clear: 'history',
   history_list: 'history',
   hover: 'interact',
@@ -540,6 +546,7 @@ export type GhostPilotToolCall =
   | { name: 'go_back'; arguments: GoBackInput }
   | { name: 'go_forward'; arguments: GoForwardInput }
   | { name: 'handle_next_dialog'; arguments: HandleNextDialogInput }
+  | { name: 'hide_facebook_chat'; arguments: HideFacebookChatInput }
   | { name: 'history_clear'; arguments: HistoryClearInput }
   | { name: 'history_list'; arguments: HistoryListInput }
   | { name: 'hover'; arguments: HoverInput }
@@ -619,6 +626,7 @@ export interface GhostPilotToolMap {
   go_back: { input: GoBackInput; output: GoBackOutput };
   go_forward: { input: GoForwardInput; output: GoForwardOutput };
   handle_next_dialog: { input: HandleNextDialogInput; output: HandleNextDialogOutput };
+  hide_facebook_chat: { input: HideFacebookChatInput; output: HideFacebookChatOutput };
   history_clear: { input: HistoryClearInput; output: HistoryClearOutput };
   history_list: { input: HistoryListInput; output: HistoryListOutput };
   hover: { input: HoverInput; output: HoverOutput };
