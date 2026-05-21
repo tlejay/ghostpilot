@@ -40,6 +40,24 @@ import {
 } from '../profile-manager.js';
 import type { Session } from 'electron';
 
+// ── Module-level state for hide_facebook_chat ──────────────────────────────
+// MCP server.ts creates a fresh McpServer + registerTools() per HTTP request
+// (stateless streamable HTTP design). Any state that must outlive a single
+// request must live outside registerTools(). The TabManager already persists
+// nav hooks across requests; this map stores the per-tab unsubscribe handle
+// and IIFE so mode:"off" can deregister the listener registered by mode:"block"
+// even when served from a different request.
+interface FbHideState {
+  /** CDP Page.addScriptToEvaluateOnNewDocument identifier (belt-and-suspenders). */
+  scriptId?: string;
+  /** The IIFE used for injection — stored so nav hooks can replay it. */
+  injectIIFE: string;
+  /** Electron-native nav hook unsubscribe — the authoritative persistence
+   *  mechanism. Fired on did-finish-load + did-navigate-in-page. */
+  unsubNav: () => void;
+}
+const fbChatHideState = new Map<string, FbHideState>();
+
 export interface ToolDeps {
   tabManager: TabManager;
   history: HistoryStore;
@@ -2080,17 +2098,8 @@ export function registerTools(
   );
 
   // ── FB Chat overlay hide (plan #15 / issue #2) ────────────────────
-  // Per-tab state. Scoped inside registerTools so it resets on MCP server restart.
-  interface FbHideState {
-    /** CDP Page.addScriptToEvaluateOnNewDocument identifier (belt-and-suspenders). */
-    scriptId?: string;
-    /** The IIFE used for injection — stored so nav hooks can replay it. */
-    injectIIFE: string;
-    /** Electron-native nav hook unsubscribe — the authoritative persistence
-     *  mechanism after v0.8.1. Fired on did-finish-load + did-navigate-in-page. */
-    unsubNav: () => void;
-  }
-  const fbChatHideState = new Map<string, FbHideState>();
+  // fbChatHideState is module-level (see top of file) — survives per-request
+  // McpServer recreation.
 
   tool('interact', () =>
     server.registerTool(

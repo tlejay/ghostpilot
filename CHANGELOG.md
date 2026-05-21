@@ -31,6 +31,11 @@ cleaned up automatically when the tab is closed. `hide_facebook_chat mode:"off"`
 the unsubscribe in addition to removing the CDP hook and the live style tag.
 
 Also in this patch:
+- **Second fix:** `fbChatHideState` map moved from inside `registerTools()` to module scope.
+  Root cause of the `removed: false` behaviour: `server.ts` creates a fresh `McpServer`
+  (and therefore a fresh `registerTools()` call, and a fresh `Map`) per HTTP request — so
+  state set during a `mode:"block"` request was destroyed before the `mode:"off"` request
+  arrived. Module-scope map survives across per-request server rebuilds.
 - README.md updated with `hide_facebook_chat` featured-tool section + tool count 76→77.
 - `pnpm gen:types` re-run (no schema change; deterministic output is unchanged).
 
