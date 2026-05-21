@@ -1,6 +1,6 @@
 {
   "name": "ghostpilot",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "private": true,
   "description": "GhostPilot — a Chrome-like Mac browser with an embedded MCP server, so Claude (or any MCP client) can pilot your everyday browsing.",
   "homepage": "https://madebytle.com",

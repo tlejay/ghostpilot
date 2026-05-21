@@ -67,6 +67,9 @@ export class TabManager {
   private wcToTab = new Map<number, string>();
   private toolbarHeight: number = DEFAULT_TOOLBAR_HEIGHT;
   private sidePanelWidth: number = 0;
+  // Callbacks registered by tools that need to re-run after navigation.
+  // Keyed by tab id; each entry is a Set so the same tab can have multiple hooks.
+  private navHooks = new Map<string, Set<() => void>>();
 
   constructor(opts: TabManagerOptions) {
     this.window = opts.window;
@@ -112,6 +115,7 @@ export class TabManager {
     }
     this.tabs.delete(id);
     this.favicons.delete(id);
+    this.navHooks.delete(id);
     this.order = this.order.filter((x) => x !== id);
     if (this.activeId === id) {
       this.activeId = null;
@@ -170,6 +174,17 @@ export class TabManager {
     wc.on('page-title-updated', emit);
     wc.on('did-navigate', emit);
     wc.on('did-navigate-in-page', emit);
+
+    // Fire registered nav hooks after full-page loads and SPA navigations.
+    // did-finish-load covers hard navigations (new document); did-navigate-in-page
+    // covers History API / hash changes inside a live document.
+    const fireNavHooks = () => {
+      for (const hook of this.navHooks.get(id) ?? []) {
+        try { hook(); } catch { /* don't let a broken hook kill the event loop */ }
+      }
+    };
+    wc.on('did-finish-load', fireNavHooks);
+    wc.on('did-navigate-in-page', fireNavHooks);
     wc.on('did-start-loading', emit);
     wc.on('did-stop-loading', emit);
     wc.on('page-favicon-updated', (_e, favicons) => {
@@ -239,6 +254,7 @@ export class TabManager {
     this.mediaDetector.detach(id);
     this.tabs.delete(id);
     this.favicons.delete(id);
+    this.navHooks.delete(id);
     this.order = this.order.filter((x) => x !== id);
 
     if (this.activeId === id) {
@@ -249,6 +265,22 @@ export class TabManager {
     } else {
       this.broadcastTabs();
     }
+  }
+
+  /** Register a callback that fires after every full-page load and every
+   *  in-page navigation for `tabId`. Returns an unsubscribe function.
+   *  Safe to call before or after the tab is created — hooks are stored
+   *  in a plain Map and read lazily by the listeners in newTab(). */
+  registerNavHook(tabId: string, cb: () => void): () => void {
+    let bucket = this.navHooks.get(tabId);
+    if (!bucket) { bucket = new Set(); this.navHooks.set(tabId, bucket); }
+    bucket.add(cb);
+    return () => {
+      const b = this.navHooks.get(tabId);
+      if (!b) return;
+      b.delete(cb);
+      if (b.size === 0) this.navHooks.delete(tabId);
+    };
   }
 
   activateTab(id: string): void {

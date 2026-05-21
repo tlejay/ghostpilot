@@ -2080,9 +2080,17 @@ export function registerTools(
   );
 
   // ── FB Chat overlay hide (plan #15 / issue #2) ────────────────────
-  // Per-tab state: tabId → Page.addScriptToEvaluateOnNewDocument identifier.
-  // Scoped inside registerTools so it is reset on MCP server restart.
-  const fbChatHideState = new Map<string, string>();
+  // Per-tab state. Scoped inside registerTools so it resets on MCP server restart.
+  interface FbHideState {
+    /** CDP Page.addScriptToEvaluateOnNewDocument identifier (belt-and-suspenders). */
+    scriptId?: string;
+    /** The IIFE used for injection — stored so nav hooks can replay it. */
+    injectIIFE: string;
+    /** Electron-native nav hook unsubscribe — the authoritative persistence
+     *  mechanism after v0.8.1. Fired on did-finish-load + did-navigate-in-page. */
+    unsubNav: () => void;
+  }
+  const fbChatHideState = new Map<string, FbHideState>();
 
   tool('interact', () =>
     server.registerTool(
@@ -2091,8 +2099,8 @@ export function registerTools(
         description:
           'Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). ' +
           'Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. ' +
-          'mode:"block" injects the CSS immediately and persists it across in-page navigations via Page.addScriptToEvaluateOnNewDocument. ' +
-          'mode:"off" removes both the live style tag and the navigation hook. ' +
+          'mode:"block" injects the CSS immediately and persists it across full-page navigations and SPA route changes via an Electron-native webContents listener (did-finish-load + did-navigate-in-page). ' +
+          'mode:"off" removes both the live style tag and the navigation listener. ' +
           'scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar.',
         inputSchema: {
           tab_id: z.string().optional(),
@@ -2105,18 +2113,22 @@ export function registerTools(
         requireTab(id);
 
         if (mode === 'off') {
-          const scriptId = fbChatHideState.get(id);
-          if (scriptId) {
+          const state = fbChatHideState.get(id);
+          // Remove Electron-native nav hook (primary persistence mechanism).
+          state?.unsubNav();
+          // Remove CDP hook (belt-and-suspenders).
+          if (state?.scriptId) {
             await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
-              identifier: scriptId,
-            });
-            fbChatHideState.delete(id);
+              identifier: state.scriptId,
+            }).catch(() => { /* tab may have navigated, CDP session gone — ignore */ });
           }
+          fbChatHideState.delete(id);
+          // Remove the live style tag from the current document.
           await tabManager.evaluate(
             id,
             `(function(){var e=document.getElementById('__ghostpilot_fb_hide__');if(e)e.remove();})()`,
           );
-          return text({ ok: true, mode: 'off', removed: !!scriptId });
+          return text({ ok: true, mode: 'off', removed: !!state });
         }
 
         // mode === 'block'
@@ -2137,8 +2149,9 @@ export function registerTools(
             : popoutSelectors;
 
         const css = appliedSelectors.join(',\n') + ' { display: none !important; }';
-        // Self-contained IIFE so it is safe both as evaluate() arg and as the
-        // addScriptToEvaluateOnNewDocument source (runs before any page script).
+        // Self-contained IIFE — safe as both an evaluate() arg and as the
+        // addScriptToEvaluateOnNewDocument source (runs before any page script,
+        // falls back to documentElement when head isn't ready yet).
         const injectIIFE = `(function(){
   var STYLE_ID='__ghostpilot_fb_hide__';
   var el=document.getElementById(STYLE_ID);
@@ -2149,20 +2162,36 @@ export function registerTools(
         // 1. Apply immediately to the live document.
         await tabManager.evaluate(id, injectIIFE);
 
-        // 2. Re-apply after every in-page navigation (SPA route changes etc.).
-        const oldId = fbChatHideState.get(id);
-        if (oldId) {
-          // Remove stale hook before adding the new one.
+        // 2. Electron-native: re-inject after every full-page load + SPA nav.
+        //    This is the authoritative fix for the v0.8.0 persistence bug —
+        //    Page.addScriptToEvaluateOnNewDocument doesn't survive CDP session
+        //    rebinds that happen on full navigation in Electron WebContentsView.
+        const oldState = fbChatHideState.get(id);
+        oldState?.unsubNav(); // remove stale listener before registering a new one
+        const unsubNav = tabManager.registerNavHook(id, () => {
+          tabManager.evaluate(id, injectIIFE).catch(() => { /* tab gone — ignore */ });
+        });
+
+        // 3. Belt-and-suspenders: also keep the CDP hook for environments where
+        //    it does work (e.g. in-process navigations without full session rebind).
+        if (oldState?.scriptId) {
           await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
-            identifier: oldId,
-          });
+            identifier: oldState.scriptId,
+          }).catch(() => {});
         }
-        const hookResult = (await tabManager.cdpSend(
-          id,
-          'Page.addScriptToEvaluateOnNewDocument',
-          { source: injectIIFE },
-        )) as { identifier: string };
-        fbChatHideState.set(id, hookResult.identifier);
+        let scriptId: string | undefined;
+        try {
+          const hookResult = (await tabManager.cdpSend(
+            id,
+            'Page.addScriptToEvaluateOnNewDocument',
+            { source: injectIIFE },
+          )) as { identifier: string };
+          scriptId = hookResult.identifier;
+        } catch {
+          // CDP hook is optional — Electron-native listener is the real fix.
+        }
+
+        fbChatHideState.set(id, { scriptId, injectIIFE, unsubNav });
 
         return text({ ok: true, mode: 'block', scope, applied_selectors: appliedSelectors });
       },

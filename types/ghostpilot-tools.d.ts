@@ -1,6 +1,6 @@
 // AUTO-GENERATED — do not edit by hand. Regenerate with `pnpm gen:types`.
 // Source: src/main/mcp/tools.ts + src/main/mcp/locator-tools.ts
-// GhostPilot version: 0.7.0
+// GhostPilot version: 0.8.1
 // Tools captured: 77
 
 /** Return a simplified accessibility tree for the page (role, name, value, focusable). Equivalent to chrome-devtools take_snapshot — useful for letting an LLM navigate by semantic role instead of CSS selectors. */
@@ -179,7 +179,7 @@ export type GoForwardOutput = unknown;
 export interface HandleNextDialogInput { accept?: boolean; promptText?: string; timeoutMs?: number; tabId?: string }
 export type HandleNextDialogOutput = unknown;
 
-/** Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. mode:"block" injects the CSS immediately and persists it across in-page navigations via Page.addScriptToEvaluateOnNewDocument. mode:"off" removes both the live style tag and the navigation hook. scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar. */
+/** Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. mode:"block" injects the CSS immediately and persists it across full-page navigations and SPA route changes via an Electron-native webContents listener (did-finish-load + did-navigate-in-page). mode:"off" removes both the live style tag and the navigation listener. scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar. */
 export interface HideFacebookChatInput { tab_id?: string; mode: "block" | "off"; scope?: "popouts" | "full_sidebar" }
 export type HideFacebookChatOutput = unknown;
 

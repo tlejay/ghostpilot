@@ -8,6 +8,32 @@ semver based on the `package.json` field.
 
 _(empty)_
 
+## [0.8.1] — 2026-05-21
+
+Fixes the `hide_facebook_chat` persistence bug from v0.8.0. No new tools; tool count stays at **77**.
+
+### Fixed — `hide_facebook_chat` CSS lost after navigation
+
+`Page.addScriptToEvaluateOnNewDocument` (the CDP mechanism used in v0.8.0) did not survive
+full-page navigations in Electron's `WebContentsView` because the debugger session
+rebinds on commit, clearing the registration. The style tag injected by `mode:"block"`
+disappeared after any `navigate()` call.
+
+**Fix:** adds an Electron-native `webContents.on('did-finish-load')` +
+`webContents.on('did-navigate-in-page')` listener pair that re-injects the style
+tag after every full-page load and every SPA route change. The CDP hook is retained
+as belt-and-suspenders for environments where it does work, but the Electron listener
+is now the authoritative persistence mechanism.
+
+**Implementation:** `TabManager.registerNavHook(tabId, cb): () => void` — a minimal
+hook registry added to `tab-manager.ts`. Returns an unsubscribe function; hooks are
+cleaned up automatically when the tab is closed. `hide_facebook_chat mode:"off"` calls
+the unsubscribe in addition to removing the CDP hook and the live style tag.
+
+Also in this patch:
+- README.md updated with `hide_facebook_chat` featured-tool section + tool count 76→77.
+- `pnpm gen:types` re-run (no schema change; deterministic output is unchanged).
+
 ## [0.8.0] — 2026-05-21
 
 Adds the `hide_facebook_chat` MCP tool (closes [#2](https://github.com/tlejay/ghostpilot/issues/2)).

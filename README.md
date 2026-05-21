@@ -4,11 +4,11 @@
   <img src="assets/icon.png" alt="GhostPilot icon" width="160" />
 </p>
 
-> **v0.4.0** — see [CHANGELOG](./CHANGELOG.md). Latest: [GitHub Release](https://github.com/tlejay/ghostpilot/releases/tag/v0.4.0).
+> **v0.8.1** — see [CHANGELOG](./CHANGELOG.md). Latest: [GitHub Release](https://github.com/tlejay/ghostpilot/releases/latest).
 
 ## What is GhostPilot
 
-GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 76-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history/profiles, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
+GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 77-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history/profiles, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
 
 ## Quick start
 
@@ -44,7 +44,7 @@ Expected response shape:
 
 5. Walk through a real end-to-end task in **[TUTORIAL.md](./TUTORIAL.md)** (capture a HAR of a Google search, extract the failed requests).
 
-## Tool surface (76)
+## Tool surface (77)
 
 > Need fewer tools for a small client context window? Filter at startup with `GHOSTPILOT_TOOLS=core` (or any comma-separated list of categories) — see [Configuration](#configuration). `tool_categories` returns the live taxonomy.
 
@@ -72,7 +72,8 @@ Expected response shape:
 | Desktop | 2 | `desktop_screenshot`, `set_window_bounds` |
 | External Chrome (`ext_*`) | 6 | `ext_list_tabs`, `ext_navigate`, `ext_evaluate`, `ext_click`, `ext_a11y_snapshot`, `ext_screenshot` |
 | Lifecycle | 3 | `stop`, `check_for_updates`, `tool_categories` (always on) |
-| **Total** | **76** | |
+| **New in v0.8.0** | **1** | **`hide_facebook_chat`** — Adblock for Messenger overlays (see below) |
+| **Total** | **77** | |
 
 Every tool that takes a `tabId` falls back to the active tab when omitted. The MCP server binds to `127.0.0.1` only.
 
@@ -81,6 +82,29 @@ Every tool that takes a `tabId` falls back to the active tab when omitted. The M
 ## Featured tools
 
 Sample requests are written as raw `curl` for portability. In practice you'll usually call them through Claude CLI or any MCP SDK.
+
+### `hide_facebook_chat` — adblock for Messenger overlays (v0.8.0)
+
+Facebook's Messenger chat bubbles render as fixed-position overlays in the bottom-right of the viewport. When you automate a click on the Post button by coordinates, Chromium's hit-test silently routes it to the chat avatar on top instead. Every project that automates FB used to need its own `_close_chat_popouts()` workaround. Not anymore.
+
+One MCP call, and every automation script stops wasting clicks on chat popouts:
+
+```bash
+# Hide popouts before your automation
+... '{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"hide_facebook_chat","arguments":{"mode":"block"}}}'
+
+# Restore when done
+... '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"hide_facebook_chat","arguments":{"mode":"off"}}}'
+```
+
+CSS injection only — no network requests are blocked, no login state is touched. Messenger.com works normally on any other tab. The injection **persists across full-page navigations and SPA route changes** (e.g. facebook.com → facebook.com/marketplace → facebook.com/groups) via an Electron-native `webContents.on('did-finish-load')` listener.
+
+Signature: `hide_facebook_chat({ tab_id?, mode: "block"|"off", scope?: "popouts"|"full_sidebar" })`
+
+- `scope:"popouts"` (default) — hides chat bubble avatars + dialog popups
+- `scope:"full_sidebar"` — also hides the right-rail Contacts sidebar
+
+Returns `{ ok: true, mode, scope, applied_selectors }` on block, `{ ok: true, mode: "off", removed }` on off.
 
 ### `list_tabs` — what's open
 
@@ -229,7 +253,7 @@ Enable headless via CLI flag (`--headless`) or env (`GHOSTPILOT_HEADLESS=1`). CL
 │  │ · WebContents│  │ · history  │  │ · Express        │     │
 │  │   View       │  │ · bookmarks│  │ · StreamableHTTP │     │
 │  │ · partition  │  │ · downloads│  │ · OAuth 2.1+PKCE │     │
-│  │ · capture    │  │ · skills   │  │ · 76 tools       │     │
+│  │ · capture    │  │ · skills   │  │ · 77 tools       │     │
 │  └─────┬────────┘  └─────┬──────┘  └────────┬─────────┘     │
 │        │                 │                  │               │
 │        └─────────────────┼──────────────────┘               │
