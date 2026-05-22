@@ -10,6 +10,16 @@
 
 GhostPilot is a real Chromium browser (Electron 33 + React + TypeScript) that ships with an embedded MCP server, so an AI agent — Claude, or any [Model Context Protocol](https://modelcontextprotocol.io) client — can drive it through a typed JSON-RPC API. Use it as your everyday browser, or run it headless on CI. The same 77-tool MCP surface works either way: navigate, click, fill forms, screenshot, query the network, export HAR, capture accessibility trees, manage bookmarks/downloads/history/profiles, and even drive a *second* external Chrome over CDP. From [madebytle.com](https://madebytle.com).
 
+## Key features
+
+- 🧑‍💻 **Browse like normal, automate when you want.** GhostPilot is a full browser with tabs, bookmarks, history, and downloads — use it as your daily driver, and let an AI take the wheel only when you need it to.
+- 🤖 **Built for AI assistants.** Plug Claude (or any AI that understands MCP) directly into the browser. The AI sees the same pages you see and can click, type, and read just like a person — no fragile screen-scraping.
+- 🪪 **Sign in once, reuse forever.** Keep separate profiles for work, personal, side projects — each with its own logged-in accounts, cookies, and history. Switch with one click.
+- 🛡️ **Stays out of your way.** Auto-hide noisy chat popouts on Facebook so your automations don't get blocked. Run hidden in the background when you don't need to watch.
+- 📱 **Drive it from anywhere.** Optional secure login lets your AI on a phone or laptop control the browser running on your home computer.
+- 🧰 **Talks to other Chromes too.** Already have a logged-in Chrome with your work account? GhostPilot can drive that one as well — no need to migrate sessions.
+- 🆓 **Open source, your machine, your data.** Everything runs locally. No cloud, no telemetry — you own the browser and the logs.
+
 ## Quick start
 
 ```bash
