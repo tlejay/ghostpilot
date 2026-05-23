@@ -24,6 +24,7 @@ export type ToolCategory =
   | 'tabs'
   | 'interact'
   | 'inspect'
+  | 'input'
   | 'network'
   | 'console'
   | 'performance'
@@ -46,6 +47,7 @@ export const ALL_CATEGORIES: readonly ToolCategory[] = [
   'tabs',
   'interact',
   'inspect',
+  'input',
   'network',
   'console',
   'performance',

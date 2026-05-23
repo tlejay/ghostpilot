@@ -2207,6 +2207,282 @@ export function registerTools(
     ),
   );
 
+  // ── Input — coordinate-based mouse + keyboard (Computer-Use parity) ─────
+  //
+  // Decisions (Phase 4, 2026-05-24):
+  //   1. Coordinates: device pixels (auto-divided by window.devicePixelRatio).
+  //      The model reads device-pixel screenshots — pass coords directly.
+  //   2. Category: 'input' (clean, distinct from DOM-selector 'interact').
+  //   3. Key convention: Playwright names ('Enter','Tab','Ctrl+A') mapped to CDP inside.
+  //   4. Scroll direction: positive deltaY = scroll down (web convention).
+  //   5. No composite vision_click — tools stay atomic; model orchestrates.
+  //   6. file_select: skipped — existing upload_file covers it correctly.
+  //   7. DPR caching: evaluate per-call (cheap; avoids stale state).
+  //   8. Drag interpolation: default 10 steps (adjustable via `steps` param).
+
+  /** Resolve device-pixel coords to CSS-pixel coords for CDP.
+   *  CDP Input events expect CSS pixels; screenshots are device pixels on Retina. */
+  async function toCssCoords(
+    tabId: string,
+    x: number,
+    y: number,
+  ): Promise<{ cssX: number; cssY: number }> {
+    const dpr =
+      ((await tabManager.evaluate(tabId, 'window.devicePixelRatio')) as number | null) ?? 1;
+    return { cssX: x / dpr, cssY: y / dpr };
+  }
+
+  // ── Key-name → CDP params mapping ────────────────────────────────────────
+  interface CdpKeyInfo {
+    key: string;
+    code: string;
+    keyCode: number;
+  }
+
+  const KEY_TABLE: Record<string, CdpKeyInfo> = {
+    enter:      { key: 'Enter',     code: 'Enter',      keyCode: 13 },
+    return:     { key: 'Enter',     code: 'Enter',      keyCode: 13 },
+    tab:        { key: 'Tab',       code: 'Tab',        keyCode: 9  },
+    escape:     { key: 'Escape',    code: 'Escape',     keyCode: 27 },
+    esc:        { key: 'Escape',    code: 'Escape',     keyCode: 27 },
+    backspace:  { key: 'Backspace', code: 'Backspace',  keyCode: 8  },
+    delete:     { key: 'Delete',    code: 'Delete',     keyCode: 46 },
+    arrowup:    { key: 'ArrowUp',   code: 'ArrowUp',    keyCode: 38 },
+    arrowdown:  { key: 'ArrowDown', code: 'ArrowDown',  keyCode: 40 },
+    arrowleft:  { key: 'ArrowLeft', code: 'ArrowLeft',  keyCode: 37 },
+    arrowright: { key: 'ArrowRight',code: 'ArrowRight', keyCode: 39 },
+    up:         { key: 'ArrowUp',   code: 'ArrowUp',    keyCode: 38 },
+    down:       { key: 'ArrowDown', code: 'ArrowDown',  keyCode: 40 },
+    left:       { key: 'ArrowLeft', code: 'ArrowLeft',  keyCode: 37 },
+    right:      { key: 'ArrowRight',code: 'ArrowRight', keyCode: 39 },
+    home:       { key: 'Home',      code: 'Home',       keyCode: 36 },
+    end:        { key: 'End',       code: 'End',        keyCode: 35 },
+    pageup:     { key: 'PageUp',    code: 'PageUp',     keyCode: 33 },
+    pagedown:   { key: 'PageDown',  code: 'PageDown',   keyCode: 34 },
+    space:      { key: ' ',         code: 'Space',      keyCode: 32 },
+    f1:  { key: 'F1',  code: 'F1',  keyCode: 112 }, f2:  { key: 'F2',  code: 'F2',  keyCode: 113 },
+    f3:  { key: 'F3',  code: 'F3',  keyCode: 114 }, f4:  { key: 'F4',  code: 'F4',  keyCode: 115 },
+    f5:  { key: 'F5',  code: 'F5',  keyCode: 116 }, f6:  { key: 'F6',  code: 'F6',  keyCode: 117 },
+    f10: { key: 'F10', code: 'F10', keyCode: 121 }, f12: { key: 'F12', code: 'F12', keyCode: 123 },
+  };
+
+  /** Parse 'Ctrl+A', 'Meta+V', 'Shift+Enter' etc. into CDP params. */
+  function parseKeyCombo(input: string): { info: CdpKeyInfo; modifiers: number } {
+    const parts = input.split('+');
+    let modifiers = 0;
+    const keyPart = parts[parts.length - 1]!;
+    for (const p of parts.slice(0, -1)) {
+      const m = p.toLowerCase().trim();
+      if (m === 'ctrl' || m === 'control') modifiers |= 2;
+      else if (m === 'shift')              modifiers |= 8;
+      else if (m === 'alt')               modifiers |= 1;
+      else if (m === 'meta' || m === 'cmd' || m === 'command') modifiers |= 4;
+    }
+    const lookup = KEY_TABLE[keyPart.toLowerCase()];
+    const info: CdpKeyInfo = lookup ?? {
+      key: keyPart,
+      code: keyPart.length === 1 ? `Key${keyPart.toUpperCase()}` : keyPart,
+      keyCode: keyPart.toUpperCase().charCodeAt(0),
+    };
+    return { info, modifiers };
+  }
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_move',
+      {
+        description:
+          'Move the mouse cursor to (x, y) in device pixels (as seen in a screenshot). ' +
+          'GhostPilot divides by window.devicePixelRatio internally — pass screenshot coords directly. ' +
+          'Useful to trigger hover states or tooltips before clicking.',
+        inputSchema: {
+          x: z.number().describe('Horizontal device-pixel coordinate'),
+          y: z.number().describe('Vertical device-pixel coordinate'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', cssX, cssY);
+        return text({ ok: true, css_x: cssX, css_y: cssY });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_click',
+      {
+        description:
+          'Click at (x, y) in device pixels. Emits trusted CDP pointer events that bypass SPA ' +
+          'event-handler restrictions (unlike the DOM-selector click tool). ' +
+          'button: "left"|"right"|"middle". count=2 for double-click.',
+        inputSchema: {
+          x: z.number(),
+          y: z.number(),
+          button: z.enum(['left', 'right', 'middle']).default('left'),
+          count: z.number().int().min(1).max(3).default(1).describe('1=single, 2=double, 3=triple'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, button, count, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', cssX, cssY);
+        await tabManager.cdpMouseEvent(id, 'mousePressed', cssX, cssY, button, count);
+        await tabManager.cdpMouseEvent(id, 'mouseReleased', cssX, cssY, button, count);
+        return text({ ok: true, css_x: cssX, css_y: cssY, button, count });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_drag',
+      {
+        description:
+          'Click-drag from (x1,y1) to (x2,y2) in device pixels. Interpolates `steps` ' +
+          'mouseMoved events between start and end for smooth drag (required by canvas, ' +
+          'sortable-list, and slider UIs). Default steps=10.',
+        inputSchema: {
+          x1: z.number(), y1: z.number(),
+          x2: z.number(), y2: z.number(),
+          steps: z.number().int().min(2).max(50).default(10),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x1, y1, x2, y2, steps, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX: sx, cssY: sy } = await toCssCoords(id, x1, y1);
+        const { cssX: ex, cssY: ey } = await toCssCoords(id, x2, y2);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', sx, sy);
+        await tabManager.cdpMouseEvent(id, 'mousePressed', sx, sy, 'left', 1);
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          await tabManager.cdpMouseEvent(id, 'mouseMoved', sx + (ex - sx) * t, sy + (ey - sy) * t);
+        }
+        await tabManager.cdpMouseEvent(id, 'mouseReleased', ex, ey, 'left', 1);
+        return text({ ok: true, from: { css_x: sx, css_y: sy }, to: { css_x: ex, css_y: ey }, steps });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'keyboard_type',
+      {
+        description:
+          'Insert text into the focused element via Input.insertText — works on any focused ' +
+          'input, contenteditable, or rich editor. Focus the target first with mouse_click. ' +
+          'Prefer this over keyboard_key for bulk text insertion.',
+        inputSchema: {
+          text: z.string().describe('Text to insert (Unicode OK, including Thai)'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ text: t, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        await tabManager.cdpInsertText(id, t);
+        return text({ ok: true, length: t.length });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'keyboard_key',
+      {
+        description:
+          'Press a named key or key combo. Uses Playwright shorthand names: ' +
+          '"Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp/Down/Left/Right", ' +
+          '"Home", "End", "PageUp", "PageDown", "Space", "F1"–"F12". ' +
+          'Combos: "Ctrl+A", "Meta+V", "Shift+Tab", "Ctrl+Shift+I". ' +
+          'Meta = Cmd on Mac. Case-insensitive.',
+        inputSchema: {
+          key: z.string().describe('Key name or combo (e.g. "Enter", "Ctrl+A", "ArrowDown")'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ key, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { info, modifiers } = parseKeyCombo(key);
+        await tabManager.cdpKeyEvent(id, 'keyDown', info.key, info.code, info.keyCode, modifiers);
+        await tabManager.cdpKeyEvent(id, 'keyUp',   info.key, info.code, info.keyCode, modifiers);
+        return text({ ok: true, key: info.key, code: info.code, modifiers });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'scroll',
+      {
+        description:
+          'Scroll the viewport at (x, y) by (delta_x, delta_y) device pixels. ' +
+          'Positive delta_y = scroll down (web convention). ' +
+          'Coordinates are device pixels; delta is also scaled by DPR internally.',
+        inputSchema: {
+          x: z.number().describe('Horizontal device-pixel position to scroll at'),
+          y: z.number().describe('Vertical device-pixel position to scroll at'),
+          delta_x: z.number().default(0).describe('Horizontal scroll distance (device px, + = right)'),
+          delta_y: z.number().default(0).describe('Vertical scroll distance (device px, + = down)'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, delta_x, delta_y, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        const dpr =
+          ((await tabManager.evaluate(id, 'window.devicePixelRatio')) as number | null) ?? 1;
+        // synthesizeScrollGesture distance is opposite sign to scroll direction
+        await tabManager.cdpSend(id, 'Input.synthesizeScrollGesture', {
+          x: cssX,
+          y: cssY,
+          xDistance: -(delta_x / dpr),
+          yDistance: -(delta_y / dpr),
+        });
+        return text({ ok: true, css_x: cssX, css_y: cssY });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'get_viewport_info',
+      {
+        description:
+          'Return viewport dimensions and devicePixelRatio. Use this to understand the ' +
+          'relationship between screenshot pixel coordinates and CSS layout coordinates. ' +
+          'All mouse/scroll tools accept device pixels directly — you do not need to normalize ' +
+          'manually, but this tool is useful for sanity-checking or computing relative positions.',
+        inputSchema: { tabId: z.string().optional() },
+      },
+      async ({ tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const info = (await tabManager.evaluate(
+          id,
+          '({ css_width: window.innerWidth, css_height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio })',
+        )) as { css_width: number; css_height: number; device_pixel_ratio: number } | null;
+        if (!info) throw new Error('get_viewport_info: evaluate returned null');
+        return text({
+          css_width: info.css_width,
+          css_height: info.css_height,
+          device_pixel_ratio: info.device_pixel_ratio,
+          screenshot_width:  Math.round(info.css_width  * info.device_pixel_ratio),
+          screenshot_height: Math.round(info.css_height * info.device_pixel_ratio),
+        });
+      },
+    ),
+  );
+
   // ── Updates ───────────────────────────────────────────────────────
   tool('lifecycle', () =>
     server.registerTool(

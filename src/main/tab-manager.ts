@@ -378,6 +378,48 @@ export class TabManager {
     return wc.debugger.sendCommand(method, params ?? {});
   }
 
+  // ── CDP Input helpers (used by 'input' MCP category) ─────────────────────
+  // All coordinates are CSS pixels (logical). Callers that hold device-pixel
+  // coords (e.g. from a screenshot) must divide by devicePixelRatio first.
+
+  async cdpMouseEvent(
+    id: string,
+    type: 'mouseMoved' | 'mousePressed' | 'mouseReleased',
+    x: number,
+    y: number,
+    button: 'left' | 'right' | 'middle' | 'none' = 'none',
+    clickCount = 1,
+    modifiers = 0,
+  ): Promise<void> {
+    await this.cdpSend(id, 'Input.dispatchMouseEvent', {
+      type, x, y, button, clickCount, modifiers,
+      ...(type !== 'mouseMoved' ? { buttons: button === 'left' ? 1 : button === 'right' ? 2 : 4 } : {}),
+    });
+  }
+
+  async cdpInsertText(id: string, text: string): Promise<void> {
+    await this.cdpSend(id, 'Input.insertText', { text });
+  }
+
+  async cdpKeyEvent(
+    id: string,
+    type: 'keyDown' | 'keyUp',
+    key: string,
+    code: string,
+    nativeVirtualKeyCode: number,
+    modifiers = 0,
+  ): Promise<void> {
+    await this.cdpSend(id, 'Input.dispatchKeyEvent', {
+      type,
+      key,
+      code,
+      nativeVirtualKeyCode,
+      modifiers,
+      // For keyDown on printable chars, text must be set so the page receives input
+      ...(type === 'keyDown' && key.length === 1 ? { text: key } : {}),
+    });
+  }
+
   // Wait for a CDP event to fire (one-shot) and return its params. Used by
   // tracing: subscribe BEFORE the trigger is sent to avoid the race.
   async waitForCdpEvent<T = unknown>(id: string, eventName: string, timeoutMs = 30000): Promise<T> {
