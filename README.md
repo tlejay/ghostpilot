@@ -306,15 +306,18 @@ Tokens in `GHOSTPILOT_TOOLS`: bare category enables it; `-name` subtracts; `all`
 ## Connect from Claude.ai (web / iPhone / iPad)
 
 ```bash
-export GHOSTPILOT_OAUTH_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20)
-pnpm dev
-# in another terminal:
+# password MUST be on the same line as pnpm dev (electron-vite does not source .env)
+GHOSTPILOT_OAUTH_PASSWORD=$(openssl rand -base64 18 | tr -d '/+=' | cut -c1-20) pnpm dev
+
+# in another terminal — prefer a named tunnel; quick tunnel shown here for first run
 brew install cloudflared
 cloudflared tunnel --url http://127.0.0.1:9223
 # → https://<random>.trycloudflare.com
 ```
 
 In Claude.ai → Settings → Connectors → **Add custom connector**: paste `https://<your-tunnel>.trycloudflare.com/mcp`, leave Client ID/Secret blank (GhostPilot supports RFC 7591 dynamic client registration). On the next call, Claude opens a login page from the tunnel — enter the password. Tokens persist per-profile across restarts.
+
+> **Read [HOWTOMCP.md](./HOWTOMCP.md) before you do this.** It covers three things that bite first-time setups: named vs quick tunnels (named is strongly preferred — quick tunnels silently die), why `.env` isn't auto-loaded, and the dynamic-OAuth recovery story.
 
 > **Threat model.** Anyone with both the tunnel URL **and** the password gets full control of every tab + any logged-in session. Use a strong password, keep the tunnel down when idle, prefer named Cloudflare tunnels with Cloudflare Access for production.
 
