@@ -10,7 +10,7 @@ For the **local** path (Claude CLI on the same machine), see the [Quick start](.
 
 1. **GhostPilot** built and running on the machine you want to control (this guide assumes `pnpm dev`; for a packaged build, swap `pnpm dev` for launching the installed `GhostPilot.app`).
 2. **Cloudflare tunnel** to expose `http://127.0.0.1:9223` to the public internet so Claude.ai can reach it.
-   - **Named tunnel** (recommended): a stable hostname like `ghostpilot.madebytle.com` that survives restarts and never silently dies.
+   - **Named tunnel** (recommended): a stable hostname like `ghostpilot.example.com` that survives restarts and never silently dies.
    - **Quick tunnel** (`cloudflared tunnel --url ...`): fine for one-off experiments, but expect to re-paste the URL into Claude.ai every restart.
 3. A **password** (`GHOSTPILOT_OAUTH_PASSWORD`) — Claude.ai gets sent here to log in before its first MCP call.
 
@@ -48,7 +48,7 @@ If you already have a `cloudflared` tunnel configured on the machine (via `cloud
 tunnel: <your-tunnel-uuid>
 credentials-file: /Users/you/.cloudflared/<your-tunnel-uuid>.json
 ingress:
-  - hostname: ghostpilot.madebytle.com
+  - hostname: ghostpilot.example.com
     service: http://127.0.0.1:9223
   - service: http_status:404
 ```
@@ -57,7 +57,7 @@ ingress:
 cloudflared tunnel run <your-tunnel-uuid>
 ```
 
-→ Server URL for Claude.ai: `https://ghostpilot.madebytle.com/mcp`
+→ Server URL for Claude.ai: `https://ghostpilot.example.com/mcp`
 
 This URL is permanent. You'll never paste it again.
 
@@ -82,7 +82,7 @@ Settings → Connectors → **Add custom connector**.
 
 | Field | Value |
 | --- | --- |
-| Server URL | `https://ghostpilot.madebytle.com/mcp` (or your quick tunnel URL + `/mcp`) |
+| Server URL | `https://ghostpilot.example.com/mcp` (or your quick tunnel URL + `/mcp`) |
 | Name | `GhostPilot` (whatever you like) |
 | Client ID | leave blank (see below) |
 | Client Secret | leave blank (see below) |
