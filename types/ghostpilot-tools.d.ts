@@ -1,7 +1,7 @@
 // AUTO-GENERATED — do not edit by hand. Regenerate with `pnpm gen:types`.
 // Source: src/main/mcp/tools.ts + src/main/mcp/locator-tools.ts
 // GhostPilot version: 0.8.1
-// Tools captured: 77
+// Tools captured: 84
 
 /** Return a simplified accessibility tree for the page (role, name, value, focusable). Equivalent to chrome-devtools take_snapshot — useful for letting an LLM navigate by semantic role instead of CSS selectors. */
 export interface A11ySnapshotInput { interestingOnly?: boolean; tabId?: string }
@@ -167,6 +167,10 @@ export type GetPageTextOutput = unknown;
 export interface GetSkillInput { id: string }
 export type GetSkillOutput = unknown;
 
+/** Return viewport dimensions and devicePixelRatio. Use this to understand the relationship between screenshot pixel coordinates and CSS layout coordinates. All mouse/scroll tools accept device pixels directly — you do not need to normalize manually, but this tool is useful for sanity-checking or computing relative positions. */
+export interface GetViewportInfoInput { tabId?: string }
+export type GetViewportInfoOutput = unknown;
+
 /** Navigate back. */
 export interface GoBackInput { tabId?: string }
 export type GoBackOutput = unknown;
@@ -202,6 +206,14 @@ export type ImportChromeBookmarksOutput = unknown;
 /** Import history from Google Chrome. Chrome should be closed (we copy the locked DB to /tmp first either way). Default limit 5000 most-recent visits. */
 export interface ImportChromeHistoryInput { profile?: string; limit?: number }
 export type ImportChromeHistoryOutput = unknown;
+
+/** Press a named key or key combo. Uses Playwright shorthand names: "Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp/Down/Left/Right", "Home", "End", "PageUp", "PageDown", "Space", "F1"–"F12". Combos: "Ctrl+A", "Meta+V", "Shift+Tab", "Ctrl+Shift+I". Meta = Cmd on Mac. Case-insensitive. */
+export interface KeyboardKeyInput { key: string; tabId?: string }
+export type KeyboardKeyOutput = unknown;
+
+/** Insert text into the focused element via Input.insertText — works on any focused input, contenteditable, or rich editor. Focus the target first with mouse_click. Prefer this over keyboard_key for bulk text insertion. */
+export interface KeyboardTypeInput { text: string; tabId?: string }
+export type KeyboardTypeOutput = unknown;
 
 /** Run a Lighthouse audit against the given URL (or the active tab's URL). Spawns a private headless Chrome via chrome-launcher — Google Chrome must be installed. Returns category scores plus the path to the full HTML report. */
 export interface LighthouseAuditInput { url?: string; formFactor?: "mobile" | "desktop"; categories?: ("performance" | "accessibility" | "best-practices" | "seo" | "pwa")[] }
@@ -239,6 +251,18 @@ export type ListTabsOutput = unknown;
 export type ListYtdlpJobsInput = Record<string, never>;
 export type ListYtdlpJobsOutput = unknown;
 
+/** Click at (x, y) in device pixels. Emits trusted CDP pointer events that bypass SPA event-handler restrictions (unlike the DOM-selector click tool). button: "left"|"right"|"middle". count=2 for double-click. */
+export interface MouseClickInput { x: number; y: number; button?: "left" | "right" | "middle"; count?: number; tabId?: string }
+export type MouseClickOutput = unknown;
+
+/** Click-drag from (x1,y1) to (x2,y2) in device pixels. Interpolates `steps` mouseMoved events between start and end for smooth drag (required by canvas, sortable-list, and slider UIs). Default steps=10. */
+export interface MouseDragInput { x1: number; y1: number; x2: number; y2: number; steps?: number; tabId?: string }
+export type MouseDragOutput = unknown;
+
+/** Move the mouse cursor to (x, y) in device pixels (as seen in a screenshot). GhostPilot divides by window.devicePixelRatio internally — pass screenshot coords directly. Useful to trigger hover states or tooltips before clicking. */
+export interface MouseMoveInput { x: number; y: number; tabId?: string }
+export type MouseMoveOutput = unknown;
+
 /** Navigate the given tab (or active tab) to a URL. */
 export interface NavigateInput { url: string; tabId?: string }
 export type NavigateOutput = unknown;
@@ -270,6 +294,10 @@ export type SaveSkillOutput = unknown;
 /** PNG screenshot of the tab as base64. */
 export interface ScreenshotInput { tabId?: string }
 export type ScreenshotOutput = unknown;
+
+/** Scroll the viewport at (x, y) by (delta_x, delta_y) device pixels. Positive delta_y = scroll down (web convention). Coordinates are device pixels; delta is also scaled by DPR internally. */
+export interface ScrollInput { x: number; y: number; delta_x?: number; delta_y?: number; tabId?: string }
+export type ScrollOutput = unknown;
 
 /** Resize and/or move the GhostPilot main window. Omitted axes keep their current value; set center:true to center on the active display (ignores x/y). New bounds are persisted to <userData>/window-bounds.json so they survive a relaunch. Returns the bounds as set plus the display the window ended up on. */
 export interface SetWindowBoundsInput { x?: number; y?: number; width?: number; height?: number; center?: boolean }
@@ -359,6 +387,7 @@ export type GhostPilotToolName =
   | 'get_page_html'
   | 'get_page_text'
   | 'get_skill'
+  | 'get_viewport_info'
   | 'go_back'
   | 'go_forward'
   | 'handle_next_dialog'
@@ -368,6 +397,8 @@ export type GhostPilotToolName =
   | 'hover'
   | 'import_chrome_bookmarks'
   | 'import_chrome_history'
+  | 'keyboard_key'
+  | 'keyboard_type'
   | 'lighthouse_audit'
   | 'list_chrome_profiles'
   | 'list_console_messages'
@@ -377,6 +408,9 @@ export type GhostPilotToolName =
   | 'list_skills'
   | 'list_tabs'
   | 'list_ytdlp_jobs'
+  | 'mouse_click'
+  | 'mouse_drag'
+  | 'mouse_move'
   | 'navigate'
   | 'new_tab'
   | 'performance_start_trace'
@@ -385,6 +419,7 @@ export type GhostPilotToolName =
   | 'reload'
   | 'save_skill'
   | 'screenshot'
+  | 'scroll'
   | 'set_window_bounds'
   | 'stop'
   | 'switch_ghostpilot_profile'
@@ -406,6 +441,7 @@ export type GhostPilotToolCategory =
   | 'emulate'
   | 'ext'
   | 'history'
+  | 'input'
   | 'inspect'
   | 'interact'
   | 'lifecycle'
@@ -462,6 +498,7 @@ export const TOOL_CATEGORY: { readonly [K in GhostPilotToolName]: GhostPilotTool
   get_page_html: 'inspect',
   get_page_text: 'inspect',
   get_skill: 'skills',
+  get_viewport_info: 'input',
   go_back: 'nav',
   go_forward: 'nav',
   handle_next_dialog: 'interact',
@@ -471,6 +508,8 @@ export const TOOL_CATEGORY: { readonly [K in GhostPilotToolName]: GhostPilotTool
   hover: 'interact',
   import_chrome_bookmarks: 'bookmarks',
   import_chrome_history: 'history',
+  keyboard_key: 'input',
+  keyboard_type: 'input',
   lighthouse_audit: 'performance',
   list_chrome_profiles: 'profiles',
   list_console_messages: 'console',
@@ -480,6 +519,9 @@ export const TOOL_CATEGORY: { readonly [K in GhostPilotToolName]: GhostPilotTool
   list_skills: 'skills',
   list_tabs: 'tabs',
   list_ytdlp_jobs: 'ytdlp',
+  mouse_click: 'input',
+  mouse_drag: 'input',
+  mouse_move: 'input',
   navigate: 'nav',
   new_tab: 'tabs',
   performance_start_trace: 'performance',
@@ -488,6 +530,7 @@ export const TOOL_CATEGORY: { readonly [K in GhostPilotToolName]: GhostPilotTool
   reload: 'nav',
   save_skill: 'skills',
   screenshot: 'inspect',
+  scroll: 'input',
   set_window_bounds: 'desktop',
   stop: 'lifecycle',
   switch_ghostpilot_profile: 'profiles',
@@ -543,6 +586,7 @@ export type GhostPilotToolCall =
   | { name: 'get_page_html'; arguments: GetPageHtmlInput }
   | { name: 'get_page_text'; arguments: GetPageTextInput }
   | { name: 'get_skill'; arguments: GetSkillInput }
+  | { name: 'get_viewport_info'; arguments: GetViewportInfoInput }
   | { name: 'go_back'; arguments: GoBackInput }
   | { name: 'go_forward'; arguments: GoForwardInput }
   | { name: 'handle_next_dialog'; arguments: HandleNextDialogInput }
@@ -552,6 +596,8 @@ export type GhostPilotToolCall =
   | { name: 'hover'; arguments: HoverInput }
   | { name: 'import_chrome_bookmarks'; arguments: ImportChromeBookmarksInput }
   | { name: 'import_chrome_history'; arguments: ImportChromeHistoryInput }
+  | { name: 'keyboard_key'; arguments: KeyboardKeyInput }
+  | { name: 'keyboard_type'; arguments: KeyboardTypeInput }
   | { name: 'lighthouse_audit'; arguments: LighthouseAuditInput }
   | { name: 'list_chrome_profiles'; arguments: ListChromeProfilesInput }
   | { name: 'list_console_messages'; arguments: ListConsoleMessagesInput }
@@ -561,6 +607,9 @@ export type GhostPilotToolCall =
   | { name: 'list_skills'; arguments: ListSkillsInput }
   | { name: 'list_tabs'; arguments: ListTabsInput }
   | { name: 'list_ytdlp_jobs'; arguments: ListYtdlpJobsInput }
+  | { name: 'mouse_click'; arguments: MouseClickInput }
+  | { name: 'mouse_drag'; arguments: MouseDragInput }
+  | { name: 'mouse_move'; arguments: MouseMoveInput }
   | { name: 'navigate'; arguments: NavigateInput }
   | { name: 'new_tab'; arguments: NewTabInput }
   | { name: 'performance_start_trace'; arguments: PerformanceStartTraceInput }
@@ -569,6 +618,7 @@ export type GhostPilotToolCall =
   | { name: 'reload'; arguments: ReloadInput }
   | { name: 'save_skill'; arguments: SaveSkillInput }
   | { name: 'screenshot'; arguments: ScreenshotInput }
+  | { name: 'scroll'; arguments: ScrollInput }
   | { name: 'set_window_bounds'; arguments: SetWindowBoundsInput }
   | { name: 'stop'; arguments: StopInput }
   | { name: 'switch_ghostpilot_profile'; arguments: SwitchGhostpilotProfileInput }
@@ -623,6 +673,7 @@ export interface GhostPilotToolMap {
   get_page_html: { input: GetPageHtmlInput; output: GetPageHtmlOutput };
   get_page_text: { input: GetPageTextInput; output: GetPageTextOutput };
   get_skill: { input: GetSkillInput; output: GetSkillOutput };
+  get_viewport_info: { input: GetViewportInfoInput; output: GetViewportInfoOutput };
   go_back: { input: GoBackInput; output: GoBackOutput };
   go_forward: { input: GoForwardInput; output: GoForwardOutput };
   handle_next_dialog: { input: HandleNextDialogInput; output: HandleNextDialogOutput };
@@ -632,6 +683,8 @@ export interface GhostPilotToolMap {
   hover: { input: HoverInput; output: HoverOutput };
   import_chrome_bookmarks: { input: ImportChromeBookmarksInput; output: ImportChromeBookmarksOutput };
   import_chrome_history: { input: ImportChromeHistoryInput; output: ImportChromeHistoryOutput };
+  keyboard_key: { input: KeyboardKeyInput; output: KeyboardKeyOutput };
+  keyboard_type: { input: KeyboardTypeInput; output: KeyboardTypeOutput };
   lighthouse_audit: { input: LighthouseAuditInput; output: LighthouseAuditOutput };
   list_chrome_profiles: { input: ListChromeProfilesInput; output: ListChromeProfilesOutput };
   list_console_messages: { input: ListConsoleMessagesInput; output: ListConsoleMessagesOutput };
@@ -641,6 +694,9 @@ export interface GhostPilotToolMap {
   list_skills: { input: ListSkillsInput; output: ListSkillsOutput };
   list_tabs: { input: ListTabsInput; output: ListTabsOutput };
   list_ytdlp_jobs: { input: ListYtdlpJobsInput; output: ListYtdlpJobsOutput };
+  mouse_click: { input: MouseClickInput; output: MouseClickOutput };
+  mouse_drag: { input: MouseDragInput; output: MouseDragOutput };
+  mouse_move: { input: MouseMoveInput; output: MouseMoveOutput };
   navigate: { input: NavigateInput; output: NavigateOutput };
   new_tab: { input: NewTabInput; output: NewTabOutput };
   performance_start_trace: { input: PerformanceStartTraceInput; output: PerformanceStartTraceOutput };
@@ -649,6 +705,7 @@ export interface GhostPilotToolMap {
   reload: { input: ReloadInput; output: ReloadOutput };
   save_skill: { input: SaveSkillInput; output: SaveSkillOutput };
   screenshot: { input: ScreenshotInput; output: ScreenshotOutput };
+  scroll: { input: ScrollInput; output: ScrollOutput };
   set_window_bounds: { input: SetWindowBoundsInput; output: SetWindowBoundsOutput };
   stop: { input: StopInput; output: StopOutput };
   switch_ghostpilot_profile: { input: SwitchGhostpilotProfileInput; output: SwitchGhostpilotProfileOutput };
