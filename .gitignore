@@ -46,3 +46,15 @@ test-results/
 # Personal Obsidian vault — notes, journals, and scripts that may contain PII.
 # Lives inside the project root for convenience but never ships with the repo.
 Obsidian/
+# Dependencies
+.pnpm-store/
+# Env & secrets
+.env.*
+!.env.example
+# Build outputs
+.next/
+build/
+# Vercel
+.vercel
+# Logs
+npm-debug.log*

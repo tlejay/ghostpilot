@@ -159,6 +159,50 @@ On the next call, Claude opens a login page from your tunnel; type the password 
 
 > **Threat model.** Anyone who has both the tunnel URL **and** the password gets full control of every tab in this browser, including any logged-in sessions. Use a strong password, keep the tunnel down when not in use, and prefer named Cloudflare tunnels with Cloudflare Access on top for production setups.
 
+#### Stable tunnel (so the connector URL doesn't break on every restart)
+
+The `cloudflared tunnel --url ...` quick-start above generates a fresh `*.trycloudflare.com` hostname every run, so the Claude.ai connector goes ✗ Failed to connect the moment you restart it. For a permanent setup, point Claude.ai at a hostname **you** own.
+
+**Option A — Cloudflare named tunnel (free, recommended)**
+
+Requires a domain on Cloudflare DNS.
+
+```bash
+cloudflared tunnel login                              # one-time browser auth
+cloudflared tunnel create ghostpilot                  # creates ~/.cloudflared/<uuid>.json
+cloudflared tunnel route dns ghostpilot ghostpilot.example.com
+```
+
+Create `~/.cloudflared/config.yml`:
+
+```yaml
+tunnel: ghostpilot
+credentials-file: /Users/<you>/.cloudflared/<uuid>.json
+ingress:
+  - hostname: ghostpilot.example.com
+    service: http://127.0.0.1:9223
+  - service: http_status:404
+```
+
+Run it (and add a LaunchAgent if you want it to come up on login):
+
+```bash
+cloudflared tunnel run ghostpilot
+```
+
+The connector URL becomes `https://ghostpilot.example.com/mcp` — stable across every reboot. Add **Cloudflare Access** in front of the hostname for an extra IdP-gated layer beyond the OAuth password.
+
+**Option B — ngrok with a reserved domain (paid)**
+
+```bash
+ngrok config add-authtoken <token>
+ngrok http --domain=ghostpilot.<your-subdomain>.ngrok-free.app 9223
+```
+
+Connector URL: `https://ghostpilot.<your-subdomain>.ngrok-free.app/mcp`.
+
+**If you stick with the throwaway `trycloudflare.com` URL**, you'll need to update the connector every time it rotates: Claude.ai → Settings → Connectors → GhostPilot → **Edit** → paste the new `https://<random>.trycloudflare.com/mcp` URL. Existing OAuth tokens stay valid as long as `GHOSTPILOT_OAUTH_PASSWORD` is unchanged.
+
 ## Build a DMG
 
 ```bash
