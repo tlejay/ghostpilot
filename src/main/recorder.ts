@@ -26,6 +26,33 @@ export interface NetworkEntry {
   status?: number;
   fromCache?: boolean;
   error?: string;
+  // Plan #6 (HAR export) — populated by the onBeforeSendHeaders +
+  // onHeadersReceived hooks below. All optional so old consumers + old
+  // entries that pre-date the hook attach are still well-formed.
+  requestHeaders?: Record<string, string | string[]>;
+  responseHeaders?: Record<string, string | string[]>;
+  statusLine?: string; // e.g. "HTTP/1.1 200 OK"
+  httpVersion?: string; // "HTTP/1.1" — best-effort from statusLine
+  mimeType?: string; // parsed from Content-Type response header
+}
+
+/** Plan #6 — superset of fields list_network_requests + export_har use. All
+ *  optional; AND semantics across fields. */
+export interface NetworkFilterOpts {
+  /** Single string (back-compat) or array. UPPERCASE compared. */
+  method?: string | string[];
+  /** Single number (back-compat) or array of exact status codes. */
+  status?: number | number[];
+  /** Auto-detect: "/foo/i" → RegExp; otherwise case-insensitive substring. */
+  urlPattern?: string;
+  /** Legacy alias for urlPattern (substring only). */
+  urlIncludes?: string;
+  /** Substring (case-insensitive) of the response Content-Type header. */
+  mimeType?: string;
+  /** ISO timestamp or epoch ms — drop entries with startedAt < since. */
+  since?: string | number;
+  /** Shortcut: status>=400 || error!=null. */
+  failedOnly?: boolean;
 }
 
 const LEVEL_NAME = ['debug', 'info', 'warning', 'error'] as const;
@@ -130,6 +157,42 @@ export class Recorder {
         this.pending.delete(entry.id);
       }
     });
+
+    // Plan #6 — request / response header capture for HAR export. Both hooks
+    // are synchronous and call back immediately with `{}` so they add no
+    // latency, matching the existing onBeforeRequest pattern.
+    session.webRequest.onBeforeSendHeaders((details, cb) => {
+      const entry = this.pending.get(String(details.id));
+      if (entry && details.requestHeaders) {
+        entry.requestHeaders = details.requestHeaders as Record<string, string | string[]>;
+      }
+      cb({});
+    });
+
+    session.webRequest.onHeadersReceived((details, cb) => {
+      const entry = this.pending.get(String(details.id));
+      if (entry) {
+        if (details.responseHeaders) {
+          entry.responseHeaders = details.responseHeaders as Record<string, string | string[]>;
+          // Best-effort Content-Type extraction (case-insensitive header
+          // lookup; Electron sometimes returns lowercased keys + arrays).
+          for (const [k, v] of Object.entries(details.responseHeaders)) {
+            if (k.toLowerCase() === 'content-type') {
+              const val = Array.isArray(v) ? v[0] : v;
+              if (typeof val === 'string') entry.mimeType = val.split(';')[0].trim().toLowerCase();
+              break;
+            }
+          }
+        }
+        if (details.statusLine) {
+          entry.statusLine = details.statusLine;
+          // statusLine looks like "HTTP/1.1 200 OK"; pull the version token.
+          const m = details.statusLine.match(/^(HTTP\/[\d.]+)/);
+          if (m) entry.httpVersion = m[1];
+        }
+      }
+      cb({});
+    });
   }
 
   getConsole(tabId: string, level?: string): ConsoleEntry[] {
@@ -151,6 +214,12 @@ export class Recorder {
       out = out.filter((e) => e.url.toLowerCase().includes(q));
     }
     return out;
+  }
+
+  /** Plan #6 — wide-filter getter. Pure pass-through to filterEntries so the
+   *  filter logic stays testable in isolation. */
+  getNetworkAll(tabId: string): NetworkEntry[] {
+    return [...(this.network.get(tabId) ?? [])];
   }
 
   clearConsole(tabId: string): void {

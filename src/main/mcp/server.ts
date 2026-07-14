@@ -1,8 +1,10 @@
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { registerTools, type ToolDeps } from './tools.js';
+import { registerTools, type RegistrationStats, type ToolDeps } from './tools.js';
+import { parseEnabledCategories } from './tool-groups.js';
 import { OAuthState } from './oauth.js';
+import pkg from '../../../package.json';
 
 interface StartOptions extends ToolDeps {
   port: number;
@@ -35,10 +37,13 @@ function withBannerInjection(server: McpServer, deps: ToolDeps): McpServer {
   return server;
 }
 
-function buildServer(deps: ToolDeps): McpServer {
-  const server = new McpServer({ name: 'ghostpilot', version: '0.2.0' });
-  registerTools(withBannerInjection(server, deps), deps);
-  return server;
+function buildServer(
+  deps: ToolDeps,
+  enabled: Set<import('./tool-groups.js').ToolCategory>,
+): { server: McpServer; stats: RegistrationStats } {
+  const server = new McpServer({ name: 'ghostpilot', version: pkg.version });
+  const stats = registerTools(withBannerInjection(server, deps), deps, enabled);
+  return { server, stats };
 }
 
 function publicBase(req: Request): string {
@@ -104,6 +109,24 @@ export async function startMcpServer(opts: StartOptions): Promise<void> {
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: false }));
 
+  // Resolve the enabled tool categories from the GHOSTPILOT_TOOLS env var once
+  // at boot — buildServer is called per /mcp request, but the filter set is
+  // constant for the process lifetime. Building a throwaway server here gives
+  // us accurate counts for the log without leaking it (the per-request
+  // McpServer instances will reuse the same enabled set).
+  const enabledCategories = parseEnabledCategories(process.env.GHOSTPILOT_TOOLS);
+  {
+    const probe = buildServer(opts, enabledCategories);
+    const { stats } = probe;
+    console.log(
+      `[ghostpilot] tools enabled: ${stats.enabledToolsCount}/${stats.totalToolsCount} ` +
+        `(categories: ${stats.enabledCategories.join(', ')})`,
+    );
+    // Throw the probe server away — we won't reuse a single McpServer across
+    // requests, and the SDK doesn't expose a side-effect-free count probe.
+    probe.server.close().catch(() => {});
+  }
+
   const oauth = opts.oauthPassword
     ? new OAuthState(opts.profile, opts.oauthPassword)
     : null;
@@ -112,7 +135,7 @@ export async function startMcpServer(opts: StartOptions): Promise<void> {
     res.json({
       ok: true,
       name: 'ghostpilot',
-      version: '0.2.0',
+      version: pkg.version,
       profile: opts.profile,
       authRequired: Boolean(opts.token) || Boolean(oauth),
       oauth: Boolean(oauth),
@@ -381,7 +404,7 @@ export async function startMcpServer(opts: StartOptions): Promise<void> {
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
       });
-      const server = buildServer(opts);
+      const { server } = buildServer(opts, enabledCategories);
 
       res.on('close', () => {
         transport.close().catch(() => {});

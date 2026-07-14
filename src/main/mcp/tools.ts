@@ -1,5 +1,25 @@
+import { promises as fsp } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { app, desktopCapturer, screen, systemPreferences } from 'electron';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
+import {
+  ALL_CATEGORIES,
+  sortCategories,
+  type ToolCategory,
+} from './tool-groups.js';
+import { withRetry, waitStable, isTransientError, type Box } from './auto-retry.js';
+import { registerLocatorTools } from './locator-tools.js';
+import {
+  filterEntries as filterNetworkEntries,
+  toHar,
+  writeHar,
+  defaultHarPath,
+  defaultHarMeta,
+} from './har-export.js';
+import { saveBounds as saveWindowBounds } from '../window-bounds.js';
+import type { BrowserWindow } from 'electron';
 import type { TabManager } from '../tab-manager.js';
 import type { HistoryStore } from '../storage/history.js';
 import type { BookmarksStore } from '../storage/bookmarks.js';
@@ -11,7 +31,32 @@ import type { YtdlpManager } from '../ytdlp.js';
 import { detectYtdlp } from '../ytdlp.js';
 import type { UpdateChecker } from '../update-checker.js';
 import { importBookmarks, importHistory, findChromeProfiles } from '../chrome-import.js';
+import {
+  listProfiles as listGhostpilotProfiles,
+  currentProfile as currentGhostpilotProfile,
+  createProfile as createGhostpilotProfile,
+  deleteProfile as deleteGhostpilotProfile,
+  validateSwitchRequest as validateGhostpilotSwitchRequest,
+} from '../profile-manager.js';
 import type { Session } from 'electron';
+
+// ── Module-level state for hide_facebook_chat ──────────────────────────────
+// MCP server.ts creates a fresh McpServer + registerTools() per HTTP request
+// (stateless streamable HTTP design). Any state that must outlive a single
+// request must live outside registerTools(). The TabManager already persists
+// nav hooks across requests; this map stores the per-tab unsubscribe handle
+// and IIFE so mode:"off" can deregister the listener registered by mode:"block"
+// even when served from a different request.
+interface FbHideState {
+  /** CDP Page.addScriptToEvaluateOnNewDocument identifier (belt-and-suspenders). */
+  scriptId?: string;
+  /** The IIFE used for injection — stored so nav hooks can replay it. */
+  injectIIFE: string;
+  /** Electron-native nav hook unsubscribe — the authoritative persistence
+   *  mechanism. Fired on did-finish-load + did-navigate-in-page. */
+  unsubNav: () => void;
+}
+const fbChatHideState = new Map<string, FbHideState>();
 
 export interface ToolDeps {
   tabManager: TabManager;
@@ -24,6 +69,18 @@ export interface ToolDeps {
   partitionSession: Session;
   ytdlp: YtdlpManager;
   updateChecker: UpdateChecker;
+  /** The main app BrowserWindow — used by desktop-category tools that
+   *  resize/move/inspect the chrome around the tabs. */
+  mainWindow: BrowserWindow;
+  /** Plan #4 — true when the process booted with `--headless` or
+   *  `GHOSTPILOT_HEADLESS=1`. Desktop-category tools that intrinsically need
+   *  a visible GUI session early-return a typed error in this mode. */
+  headless?: boolean;
+  /** Plan #5 — the profile name the current process is running as. Used by
+   *  the new GhostPilot profile-management tools (list/current/create/delete/
+   *  switch) to know which profile is active. Mirror of `process.env.AI_BROWSER_PROFILE`
+   *  resolved at boot (`src/main/profile.ts → getActiveProfile`). */
+  profile?: string;
 }
 
 const text = (value: unknown) => ({
@@ -35,7 +92,139 @@ const text = (value: unknown) => ({
   ],
 });
 
-export function registerTools(server: McpServer, deps: ToolDeps): void {
+/**
+ * Capture the Mac desktop to a PNG file using Electron's `desktopCapturer`.
+ *
+ * Why not /usr/sbin/screencapture? On macOS Sequoia, TCC's Screen Recording
+ * permission does NOT propagate from the parent (Electron) to subprocess
+ * children — execFile('screencapture', ...) runs without TCC inheritance and
+ * fails with "could not create image from display" even when GhostPilot.app
+ * itself has been granted. Doing the capture INSIDE the Electron main process
+ * (which holds the TCC grant) sidesteps the issue.
+ * (Investigation: task c464fd78.)
+ *
+ * `display` is a 0-based index over `screen.getAllDisplays()`. Omit it to
+ * capture the primary display. (Cross-display single-PNG composition isn't
+ * a desktopCapturer feature; we keep the simpler "one display per call"
+ * shape and let callers loop if they need both.)
+ *
+ * Width/height come straight from NativeImage.getSize() — no PNG header
+ * parsing required.
+ */
+async function captureDesktopScreenshot(opts: {
+  path?: string;
+  display?: number;
+}): Promise<{ path: string; size_bytes: number; width: number; height: number }> {
+  const finalPath =
+    opts.path ??
+    path.join(
+      tmpdir(),
+      `ghostpilot-snap-${new Date().toISOString().replace(/[:.]/g, '-')}.png`,
+    );
+
+  const displays = screen.getAllDisplays();
+  const targetIdx =
+    typeof opts.display === 'number'
+      ? opts.display
+      : displays.findIndex((d) => d.id === screen.getPrimaryDisplay().id);
+  const finalIdx = targetIdx < 0 ? 0 : targetIdx;
+  const target = displays[finalIdx];
+  if (!target) {
+    throw new Error(
+      `desktop_screenshot: display index ${opts.display} out of range ` +
+        `(only ${displays.length} display(s) available)`,
+    );
+  }
+  // Ask for the display's native pixel resolution. desktopCapturer thumbnailSize
+  // expresses pixels, so multiply CSS-pixel size by scaleFactor to avoid Retina downscale.
+  const tw = Math.round(target.size.width * target.scaleFactor);
+  const th = Math.round(target.size.height * target.scaleFactor);
+
+  // On macOS, surface TCC state in the error message so the caller knows
+  // whether to (a) grant permission or (b) wait for the OS prompt. Status
+  // values: 'not-determined' | 'granted' | 'denied' | 'restricted' | 'unknown'.
+  const tccStatus =
+    process.platform === 'darwin'
+      ? systemPreferences.getMediaAccessStatus('screen')
+      : 'n/a';
+  // eslint-disable-next-line no-console
+  console.error(`[desktop_screenshot] TCC screen-recording status: ${tccStatus}`);
+
+  let sources: Electron.DesktopCapturerSource[];
+  try {
+    sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: tw, height: th },
+    });
+  } catch (e) {
+    // Log the raw error to main-process stderr so we can grep it in the dev
+    // log; the MCP response only carries the formatted message back.
+    // eslint-disable-next-line no-console
+    console.error('[desktop_screenshot] getSources threw:', e);
+    const detail =
+      e instanceof Error
+        ? `${e.name}: ${e.message}`
+        : typeof e === 'string'
+          ? e
+          : JSON.stringify(e);
+    throw new Error(
+      `desktopCapturer.getSources failed: ${detail || 'no detail'} ` +
+        `(TCC screen-recording status: ${tccStatus}). ` +
+        'If status is "denied" or "not-determined", grant Electron.app (CFBundleName ' +
+        '"GhostPilot") Screen Recording in System Settings > Privacy & Security > ' +
+        'Screen Recording, then quit & relaunch GhostPilot.',
+    );
+  }
+  if (sources.length === 0) {
+    throw new Error(
+      'desktopCapturer returned 0 screen sources — Screen Recording TCC ' +
+        'permission is likely missing (System Settings > Privacy & Security > ' +
+        'Screen Recording > add GhostPilot.app).',
+    );
+  }
+  // Match the source by display_id when possible (desktopCapturer's display_id
+  // is the same number screen.Display#id reports). Fall back to first source.
+  const match =
+    sources.find((s) => s.display_id === String(target.id)) ?? sources[0];
+  const img = match.thumbnail;
+  if (img.isEmpty()) {
+    throw new Error(
+      'desktopCapturer thumbnail was empty — Screen Recording TCC permission ' +
+        'is likely missing (System Settings > Privacy & Security > Screen ' +
+        'Recording > add GhostPilot.app).',
+    );
+  }
+  const png = img.toPNG();
+  await fsp.writeFile(finalPath, png);
+
+  const size = img.getSize();
+  const stat = await fsp.stat(finalPath);
+  return {
+    path: finalPath,
+    size_bytes: stat.size,
+    width: size.width,
+    height: size.height,
+  };
+}
+
+/**
+ * Summary of what got registered — returned by registerTools(), surfaced by
+ * the introspection tool and the server startup log.
+ */
+export interface RegistrationStats {
+  enabledCategories: ToolCategory[];
+  /** Categories declared in code (may differ from enabledCategories when
+   *  GHOSTPILOT_TOOLS is set). */
+  availableCategories: ToolCategory[];
+  enabledToolsCount: number;
+  totalToolsCount: number;
+}
+
+export function registerTools(
+  server: McpServer,
+  deps: ToolDeps,
+  enabled: Set<ToolCategory> = new Set<ToolCategory>(ALL_CATEGORIES),
+): RegistrationStats {
   const {
     tabManager,
     history,
@@ -47,7 +236,26 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     partitionSession,
     ytdlp,
     updateChecker,
+    mainWindow,
+    headless = false,
+    profile: activeProfile = 'default',
   } = deps;
+
+  const HEADLESS_ERROR =
+    'GhostPilot is running in headless mode; this tool requires a visible window';
+
+  // Gate every server.registerTool() call behind a category check. Using a
+  // thunk so each call site keeps direct access to server.registerTool's
+  // generic inference (the wrapped form needs the SDK's full ZodRawShapeCompat
+  // generics, which is awkward to forward through a wrapper).
+  let enabledCount = 0;
+  let totalCount = 0;
+  const tool = (category: ToolCategory, register: () => unknown): void => {
+    totalCount += 1;
+    if (!enabled.has(category)) return;
+    register();
+    enabledCount += 1;
+  };
 
   const requireTab = (tabId: string) => {
     const tab = tabManager.getTab(tabId);
@@ -62,45 +270,116 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
     return active;
   };
 
+  // ── Auto-retry helpers (plan §4) ──────────────────────────────────
+  // Shared shape used by the 6 mutating tools. Kept here (rather than re-spelled
+  // at each call site) so a future schema tweak is one edit. retries min=1 per
+  // plan Q3; withRetry also clamps internally, but rejecting at the schema
+  // gives the caller a clearer error.
+  const retryOptsSchema = {
+    retries: z.number().int().min(1).max(10).optional(),
+    retry_delay_ms: z.array(z.number().int().nonnegative()).optional(),
+    wait_stable_ms: z.number().int().nonnegative().optional(),
+    wait_timeout_ms: z.number().int().positive().optional(),
+  } as const;
+
+  type RetryOpts = {
+    retries?: number;
+    retry_delay_ms?: number[];
+    wait_stable_ms?: number;
+    wait_timeout_ms?: number;
+  };
+
+  // validate() helper for tools that return {ok:false,error:'…'} on soft
+  // failure: convert the failure into a retry signal only when the error
+  // matches a transient pattern. Non-transient soft failures (e.g. 'not
+  // found' from an invalid selector) pass through unchanged so callers see
+  // the same response shape they did before plan #3.
+  const validateOkOrTransient = (r: unknown): string | null => {
+    const v = r as { ok?: boolean; error?: string } | null;
+    if (!v) return null;
+    if (v.ok) return null;
+    const err = v.error ?? '';
+    return isTransientError(err) ? err : null;
+  };
+
+  // Wait until the element matching `selector` has a bounding-box that hasn't
+  // moved for `wait_stable_ms`. Skipped entirely when wait_stable_ms===0 (the
+  // documented opt-out per plan §4.2). Errors flow up to withRetry which will
+  // retry the whole wait+act on the transient "not stable" / "not visible".
+  const waitStableForSelector = async (
+    id: string,
+    selector: string,
+    opts: RetryOpts,
+  ): Promise<void> => {
+    if (opts.wait_stable_ms === 0) return;
+    const sel = JSON.stringify(selector);
+    const getBox = async (): Promise<Box | null> => {
+      const r = (await tabManager.evaluate(
+        id,
+        `(() => {
+          const el = document.querySelector(${sel});
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) return null;
+          return { x: r.left, y: r.top, width: r.width, height: r.height };
+        })()`,
+      )) as Box | null;
+      return r;
+    };
+    await waitStable(getBox, {
+      wait_stable_ms: opts.wait_stable_ms,
+      wait_timeout_ms: opts.wait_timeout_ms,
+    });
+  };
+
   // ── Tabs ──────────────────────────────────────────────────────────
-  server.registerTool(
-    'list_tabs',
+  tool('tabs', () =>
+    server.registerTool(
+      'list_tabs',
     {
       description: 'List every open browser tab with id, url, title, loading state, and active flag.',
       inputSchema: {},
     },
     async () => text(tabManager.listTabs()),
+    ),
   );
 
-  server.registerTool(
-    'new_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'new_tab',
     {
       description: 'Open a new tab. URL accepts schemes, bare hostnames, or search queries (Google).',
       inputSchema: { url: z.string().optional() },
     },
     async ({ url }) => text(tabManager.newTab(url)),
+    ),
   );
 
-  server.registerTool(
-    'close_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'close_tab',
     { description: 'Close a tab by id.', inputSchema: { tabId: z.string() } },
     async ({ tabId }) => {
       tabManager.closeTab(tabId);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'activate_tab',
+  tool('tabs', () =>
+    server.registerTool(
+      'activate_tab',
     { description: 'Bring a tab to the foreground.', inputSchema: { tabId: z.string() } },
     async ({ tabId }) => {
       tabManager.activateTab(tabId);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'navigate',
+  tool('nav', () =>
+    server.registerTool(
+      'navigate',
     {
       description: 'Navigate the given tab (or active tab) to a URL.',
       inputSchema: { url: z.string(), tabId: z.string().optional() },
@@ -110,46 +389,56 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       tabManager.navigate(id, url);
       return text({ ok: true, tabId: id });
     },
+    ),
   );
 
-  server.registerTool(
-    'go_back',
+  tool('nav', () =>
+    server.registerTool(
+      'go_back',
     { description: 'Navigate back.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.goBack(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'go_forward',
+  tool('nav', () =>
+    server.registerTool(
+      'go_forward',
     { description: 'Navigate forward.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.goForward(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'reload',
+  tool('nav', () =>
+    server.registerTool(
+      'reload',
     { description: 'Reload the page.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.reload(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'stop',
+  tool('lifecycle', () =>
+    server.registerTool(
+      'stop',
     { description: 'Stop loading.', inputSchema: { tabId: z.string().optional() } },
     async ({ tabId }) => {
       tabManager.stop(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'toggle_devtools',
+  tool('emulate', () =>
+    server.registerTool(
+      'toggle_devtools',
     {
       description: 'Open or close DevTools for the given tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -158,11 +447,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       tabManager.toggleDevTools(resolveTabId(tabId));
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Page content ──────────────────────────────────────────────────
-  server.registerTool(
-    'get_page_text',
+  tool('inspect', () =>
+    server.registerTool(
+      'get_page_text',
     {
       description: 'Return rendered innerText of the page body.',
       inputSchema: { tabId: z.string().optional() },
@@ -172,10 +463,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.getPageText(id)) ?? '');
     },
+    ),
   );
 
-  server.registerTool(
-    'get_page_html',
+  tool('inspect', () =>
+    server.registerTool(
+      'get_page_html',
     {
       description: 'Return outerHTML of the document.',
       inputSchema: { tabId: z.string().optional() },
@@ -185,10 +478,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.getPageHtml(id)) ?? '');
     },
+    ),
   );
 
-  server.registerTool(
-    'screenshot',
+  tool('inspect', () =>
+    server.registerTool(
+      'screenshot',
     {
       description: 'PNG screenshot of the tab as base64.',
       inputSchema: { tabId: z.string().optional() },
@@ -204,10 +499,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         ],
       };
     },
+    ),
   );
 
-  server.registerTool(
-    'evaluate',
+  tool('inspect', () =>
+    server.registerTool(
+      'evaluate',
     {
       description:
         'Run JavaScript in the page context and return the result. Use a single expression or IIFE returning a JSON-serializable value.',
@@ -218,59 +515,106 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text((await tabManager.evaluate(id, script)) ?? null);
     },
+    ),
   );
 
-  server.registerTool(
-    'click',
+  tool('interact', () =>
+    server.registerTool(
+      'click',
     {
-      description: 'Click the first element matching the CSS selector.',
-      inputSchema: { selector: z.string(), tabId: z.string().optional() },
+      description:
+        'Click the first element matching the CSS selector. Auto-waits for the ' +
+        'element to be visible + stable (bounding box unchanged for wait_stable_ms) ' +
+        'and retries on transient DOM errors (node detached, target closed, etc.).',
+      inputSchema: {
+        selector: z.string(),
+        tabId: z.string().optional(),
+        ...retryOptsSchema,
+      },
     },
-    async ({ selector, tabId }) => {
+    async ({ selector, tabId, retries, retry_delay_ms, wait_stable_ms, wait_timeout_ms }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
       const sel = JSON.stringify(selector);
-      const out = await tabManager.evaluate(
-        id,
-        `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+      const out = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return (await tabManager.evaluate(
+            id,
+            `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+          )) as { ok: boolean; error?: string } | null;
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `click(${sel})`,
+          validate: validateOkOrTransient,
+        },
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'fill',
+  tool('interact', () =>
+    server.registerTool(
+      'fill',
     {
-      description: 'Set value on input/textarea matching selector and dispatch input + change events.',
+      description:
+        'Set value on input/textarea matching selector and dispatch input + change ' +
+        'events. Auto-waits for the element to be visible + stable and retries on ' +
+        'transient DOM errors (node detached, frame detached, target closed, etc.).',
       inputSchema: {
         selector: z.string(),
         value: z.string(),
         tabId: z.string().optional(),
+        ...retryOptsSchema,
       },
     },
-    async ({ selector, value, tabId }) => {
+    async ({
+      selector,
+      value,
+      tabId,
+      retries,
+      retry_delay_ms,
+      wait_stable_ms,
+      wait_timeout_ms,
+    }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
       const sel = JSON.stringify(selector);
       const val = JSON.stringify(value);
-      const out = await tabManager.evaluate(
-        id,
-        `(() => {
-          const el = document.querySelector(${sel});
-          if (!el) return { ok:false, error:'not found' };
-          el.focus();
-          if ('value' in el) el.value = ${val};
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-          el.dispatchEvent(new Event('change', { bubbles: true }));
-          return { ok:true };
-        })()`,
+      const out = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return (await tabManager.evaluate(
+            id,
+            `(() => {
+              const el = document.querySelector(${sel});
+              if (!el) return { ok:false, error:'not found' };
+              el.focus();
+              if ('value' in el) el.value = ${val};
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              return { ok:true };
+            })()`,
+          )) as { ok: boolean; error?: string } | null;
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `fill(${sel})`,
+          validate: validateOkOrTransient,
+        },
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'wait_for_selector',
+  tool('inspect', () =>
+    server.registerTool(
+      'wait_for_selector',
     {
       description: 'Wait until selector exists in the DOM (default timeout 10000ms).',
       inputSchema: {
@@ -298,11 +642,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
   // ── History ───────────────────────────────────────────────────────
-  server.registerTool(
-    'history_list',
+  tool('history', () =>
+    server.registerTool(
+      'history_list',
     {
       description: 'Return browser history. Optional case-insensitive substring match against url/title.',
       inputSchema: {
@@ -311,29 +657,35 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ limit, query }) => text(await history.list(limit ?? 100, query)),
+    ),
   );
 
-  server.registerTool(
-    'history_clear',
+  tool('history', () =>
+    server.registerTool(
+      'history_clear',
     { description: 'Clear all browser history for this profile.', inputSchema: {} },
     async () => {
       await history.clear();
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Bookmarks ─────────────────────────────────────────────────────
-  server.registerTool(
-    'bookmarks_list',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_list',
     {
       description: 'List bookmarks. Optional case-insensitive substring match.',
       inputSchema: { query: z.string().optional() },
     },
     async ({ query }) => text(await bookmarks.list(query)),
+    ),
   );
 
-  server.registerTool(
-    'bookmarks_add',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_add',
     {
       description: 'Bookmark a URL with title and optional folder.',
       inputSchema: {
@@ -343,10 +695,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ url, title, folder }) => text(await bookmarks.add({ url, title, folder })),
+    ),
   );
 
-  server.registerTool(
-    'bookmarks_remove',
+  tool('bookmarks', () =>
+    server.registerTool(
+      'bookmarks_remove',
     {
       description: 'Remove a bookmark by id.',
       inputSchema: { id: z.string() },
@@ -355,38 +709,46 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await bookmarks.remove(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Downloads ─────────────────────────────────────────────────────
-  server.registerTool(
-    'downloads_list',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_list',
     {
       description: 'List downloads, newest first.',
       inputSchema: { limit: z.number().int().positive().max(500).optional() },
     },
     async ({ limit }) => text(await downloads.list(limit ?? 100)),
+    ),
   );
 
-  server.registerTool(
-    'downloads_cancel',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_cancel',
     {
       description: 'Cancel an in-progress download by id.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await downloads.cancel(id) }),
+    ),
   );
 
-  server.registerTool(
-    'downloads_reveal',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_reveal',
     {
       description: 'Reveal a completed download in Finder.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await downloads.revealInFinder(id) }),
+    ),
   );
 
-  server.registerTool(
-    'downloads_clear',
+  tool('downloads', () =>
+    server.registerTool(
+      'downloads_clear',
     {
       description: 'Clear finished downloads from the list (in-flight downloads are kept).',
       inputSchema: {},
@@ -395,57 +757,115 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await downloads.clear();
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Input (low-level) ─────────────────────────────────────────────
-  server.registerTool(
-    'press_key',
+  tool('interact', () =>
+    server.registerTool(
+      'press_key',
     {
       description:
-        'Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown", or "a"). Optional modifiers: shift/control/alt/meta.',
+        'Press a single key (e.g. "Enter", "Tab", "Escape", "ArrowDown", or "a"). ' +
+        'Optional modifiers: shift/control/alt/meta. Retries on transient errors ' +
+        '(target closed, WebContents destroyed) — key events go to whatever has ' +
+        'focus, so no selector / waitStable needed.',
       inputSchema: {
         key: z.string(),
         modifiers: z.array(z.enum(['shift', 'control', 'alt', 'meta'])).optional(),
         tabId: z.string().optional(),
+        // press_key has no selector, so wait_stable_ms / wait_timeout_ms are
+        // omitted — only retry knobs apply.
+        retries: retryOptsSchema.retries,
+        retry_delay_ms: retryOptsSchema.retry_delay_ms,
       },
     },
-    async ({ key, modifiers, tabId }) => {
+    async ({ key, modifiers, tabId, retries, retry_delay_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = tabManager.pressKey(id, key, modifiers);
+      const ok = await withRetry(
+        async () => tabManager.pressKey(id, key, modifiers),
+        {
+          retries,
+          retry_delay_ms,
+          label: `press_key(${JSON.stringify(key)})`,
+          // pressKey returns false when the WebContents is gone — surface it as
+          // a transient so the retry loop has a chance if the tab is recreating.
+          validate: (r) => (r === false ? 'target closed' : null),
+        },
+      );
       return text({ ok });
     },
+    ),
   );
 
-  server.registerTool(
-    'type_text',
+  tool('interact', () =>
+    server.registerTool(
+      'type_text',
     {
       description:
-        'Type a literal string into whichever element currently has focus (call `click` or `fill` first to focus an input).',
-      inputSchema: { text: z.string(), tabId: z.string().optional() },
+        'Type a literal string into whichever element currently has focus (call ' +
+        '`click` or `fill` first to focus an input). Retries on transient errors.',
+      inputSchema: {
+        text: z.string(),
+        tabId: z.string().optional(),
+        retries: retryOptsSchema.retries,
+        retry_delay_ms: retryOptsSchema.retry_delay_ms,
+      },
     },
-    async ({ text: input, tabId }) => {
+    async ({ text: input, tabId, retries, retry_delay_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = tabManager.typeText(id, input);
+      const ok = await withRetry(
+        async () => tabManager.typeText(id, input),
+        {
+          retries,
+          retry_delay_ms,
+          label: 'type_text',
+          validate: (r) => (r === false ? 'target closed' : null),
+        },
+      );
       return text({ ok });
     },
+    ),
   );
 
-  server.registerTool(
-    'hover',
+  tool('interact', () =>
+    server.registerTool(
+      'hover',
     {
-      description: 'Move the mouse pointer to the centre of the element matching the selector.',
-      inputSchema: { selector: z.string(), tabId: z.string().optional() },
+      description:
+        'Move the mouse pointer to the centre of the element matching the selector. ' +
+        'Auto-waits for the element to be visible + stable and retries on transient ' +
+        'DOM errors.',
+      inputSchema: {
+        selector: z.string(),
+        tabId: z.string().optional(),
+        ...retryOptsSchema,
+      },
     },
-    async ({ selector, tabId }) => {
+    async ({ selector, tabId, retries, retry_delay_ms, wait_stable_ms, wait_timeout_ms }) => {
       const id = resolveTabId(tabId);
-      const ok = await tabManager.hover(id, selector);
+      const ok = await withRetry(
+        async () => {
+          await waitStableForSelector(id, selector, { wait_stable_ms, wait_timeout_ms });
+          return tabManager.hover(id, selector);
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `hover(${JSON.stringify(selector)})`,
+          // hover returns false when the element vanished mid-call → transient.
+          validate: (r) => (r === false ? 'element is not visible' : null),
+        },
+      );
       return text({ ok });
     },
+    ),
   );
 
   // ── Console ───────────────────────────────────────────────────────
-  server.registerTool(
-    'list_console_messages',
+  tool('console', () =>
+    server.registerTool(
+      'list_console_messages',
     {
       description:
         'Return console messages captured for the tab (rolling buffer of 200). Optional level filter: info, warning, error, debug.',
@@ -459,10 +879,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text(recorder.getConsole(id, level));
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_console_messages',
+  tool('console', () =>
+    server.registerTool(
+      'clear_console_messages',
     {
       description: 'Clear the captured console buffer for the tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -473,30 +895,60 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       recorder.clearConsole(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── Network ───────────────────────────────────────────────────────
-  server.registerTool(
-    'list_network_requests',
+  // Shared filter schema for list_network_requests + export_har (Plan #6).
+  // All fields optional, AND semantics across axes. `method` and `status`
+  // accept either a scalar (back-compat) or an array.
+  const networkFilterSchema = {
+    method: z.union([z.string(), z.array(z.string())]).optional(),
+    status: z.union([z.number().int(), z.array(z.number().int())]).optional(),
+    urlPattern: z.string().optional(),
+    urlIncludes: z.string().optional(),
+    mimeType: z.string().optional(),
+    since: z.union([z.string(), z.number()]).optional(),
+    failedOnly: z.boolean().optional(),
+  } as const;
+
+  tool('network', () =>
+    server.registerTool(
+      'list_network_requests',
     {
       description:
-        'Return network requests captured for the tab (rolling buffer of 500). Optional filters: method (GET/POST/...), status, urlIncludes (substring match).',
+        'Return network requests captured for the tab (rolling buffer of 500). ' +
+        'All filters optional, AND semantics: method (string or [strings]), status (number or [numbers]), ' +
+        'urlPattern (substring OR `/regex/flags`), urlIncludes (legacy substring alias), mimeType (substring ' +
+        'of response Content-Type), since (ISO timestamp or epoch ms), failedOnly (status≥400 || error≠null). ' +
+        'Each entry now also carries requestHeaders / responseHeaders / statusLine / mimeType when available — ' +
+        'use export_har for a portable .har file.',
       inputSchema: {
-        method: z.string().optional(),
-        status: z.number().int().optional(),
-        urlIncludes: z.string().optional(),
+        ...networkFilterSchema,
         tabId: z.string().optional(),
       },
     },
-    async ({ method, status, urlIncludes, tabId }) => {
-      const id = resolveTabId(tabId);
+    async (args: {
+      method?: string | string[];
+      status?: number | number[];
+      urlPattern?: string;
+      urlIncludes?: string;
+      mimeType?: string;
+      since?: string | number;
+      failedOnly?: boolean;
+      tabId?: string;
+    }) => {
+      const id = resolveTabId(args.tabId);
       requireTab(id);
-      return text(recorder.getNetwork(id, { method, status, urlIncludes }));
+      const all = recorder.getNetworkAll(id);
+      return text(filterNetworkEntries(all, args));
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_network_requests',
+  tool('network', () =>
+    server.registerTool(
+      'clear_network_requests',
     {
       description: 'Clear the captured network buffer for the tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -507,11 +959,64 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       recorder.clearNetwork(id);
       return text({ ok: true });
     },
+    ),
+  );
+
+  tool('network', () =>
+    server.registerTool(
+      'export_har',
+    {
+      description:
+        'Write the captured network buffer (optionally filtered) to a HAR 1.2 file on disk. ' +
+        'Same filter fields as list_network_requests. Default path is /tmp/ghostpilot-har-<ISO>.har. ' +
+        'Output is openable in Chrome DevTools (Network tab → Import HAR…), Charles, Postman, k6, etc. ' +
+        'NOTE v1: response BODY is not captured (HAR `content.text` is omitted; `content.size` is -1). ' +
+        'All major HAR readers accept this shape.',
+      inputSchema: {
+        ...networkFilterSchema,
+        path: z.string().optional(),
+        pretty: z.boolean().optional(),
+        tabId: z.string().optional(),
+      },
+    },
+    async (args: {
+      method?: string | string[];
+      status?: number | number[];
+      urlPattern?: string;
+      urlIncludes?: string;
+      mimeType?: string;
+      since?: string | number;
+      failedOnly?: boolean;
+      path?: string;
+      pretty?: boolean;
+      tabId?: string;
+    }) => {
+      const id = resolveTabId(args.tabId);
+      requireTab(id);
+      const all = recorder.getNetworkAll(id);
+      const filtered = filterNetworkEntries(all, args);
+      const har = toHar(filtered, defaultHarMeta());
+      const outPath = args.path && args.path.length > 0 ? args.path : defaultHarPath();
+      const result = await writeHar(outPath, har, args.pretty === true);
+      const startedIso =
+        filtered.length > 0
+          ? new Date(Math.min(...filtered.map((e) => e.startedAt))).toISOString()
+          : null;
+      const endedIso =
+        filtered.length > 0
+          ? new Date(
+              Math.max(...filtered.map((e) => e.endedAt ?? e.startedAt)),
+            ).toISOString()
+          : null;
+      return text({ ok: true, ...result, started_iso: startedIso, ended_iso: endedIso });
+    },
+    ),
   );
 
   // ── Raw CDP escape hatch ──────────────────────────────────────────
-  server.registerTool(
-    'cdp_send',
+  tool('cdp', () =>
+    server.registerTool(
+      'cdp_send',
     {
       description:
         'Forward a raw Chrome DevTools Protocol command to the tab. Anything chrome-devtools MCP can do (Network.*, DOM.*, Page.*, Performance.*, Accessibility.*, Emulation.*, …) is accessible here. See https://chromedevtools.github.io/devtools-protocol/.',
@@ -526,30 +1031,119 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       const result = await tabManager.cdpSend(id, method, params);
       return text(result ?? null);
     },
+    ),
   );
 
   // ── Chrome import ─────────────────────────────────────────────────
-  server.registerTool(
-    'list_chrome_profiles',
+  tool('profiles', () =>
+    server.registerTool(
+      'list_chrome_profiles',
     {
       description: 'List available Google Chrome profile directories on this Mac (Default, Profile 1, …).',
       inputSchema: {},
     },
     async () => text(await findChromeProfiles()),
+    ),
   );
 
-  server.registerTool(
-    'import_chrome_bookmarks',
+  // ── GhostPilot profile management (Plan #5) ───────────────────────
+  tool('profiles', () =>
+    server.registerTool(
+      'list_ghostpilot_profiles',
+    {
+      description:
+        'List GhostPilot browser profiles on disk (cookies/storage/history isolated per profile). The active profile is sorted first and flagged. Each entry includes sizeBytes + lastModified.',
+      inputSchema: {},
+    },
+    async () => text(listGhostpilotProfiles(app.getPath('userData'), activeProfile)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'current_ghostpilot_profile',
+    {
+      description:
+        'Return the name of the GhostPilot profile this process is running as, plus its session partition string and per-profile userData directory.',
+      inputSchema: {},
+    },
+    async () => text(currentGhostpilotProfile(app.getPath('userData'), activeProfile)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'create_ghostpilot_profile',
+    {
+      description:
+        'Create a new GhostPilot profile (idempotent — returns created:false if it already existed). Profile name must match [a-zA-Z0-9_-]{1,32}. The new profile starts empty; storage is populated on first use after a switch.',
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => text(await createGhostpilotProfile(app.getPath('userData'), name)),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'delete_ghostpilot_profile',
+    {
+      description:
+        'Delete a GhostPilot profile directory from disk. Refuses when the name equals the active profile. Refuses to delete the literal "default" profile unless force:true (default is the implicit fallback). Returns {ok:false, error} on refusal.',
+      inputSchema: { name: z.string(), force: z.boolean().optional() },
+    },
+    async ({ name, force }) =>
+      text(
+        await deleteGhostpilotProfile(app.getPath('userData'), name, {
+          activeName: activeProfile,
+          force,
+        }),
+      ),
+    ),
+  );
+
+  tool('profiles', () =>
+    server.registerTool(
+      'switch_ghostpilot_profile',
+    {
+      description:
+        'Switch the GhostPilot profile. RELAUNCHES the process — the MCP connection will drop, reconnect after ~3s. If `name` equals the active profile, returns immediately without relaunching. Profile name must match [a-zA-Z0-9_-]{1,32}.',
+      inputSchema: { name: z.string() },
+    },
+    async ({ name }) => {
+      const req = validateGhostpilotSwitchRequest(name, activeProfile);
+      if (!req.ok || !req.relaunching) return text(req);
+      // Schedule the relaunch *after* this response flushes. The HTTP transport
+      // serializes res.write+res.end before we return; the 200ms timer gives
+      // TCP a generous window to flush before the process exits.
+      setTimeout(() => {
+        try {
+          process.env['AI_BROWSER_PROFILE'] = req.name!;
+          app.relaunch({ args: process.argv.slice(1) });
+          app.exit(0);
+        } catch (err) {
+          console.error('[switch_ghostpilot_profile] relaunch failed:', err);
+        }
+      }, 200);
+      return text(req);
+    },
+    ),
+  );
+
+  tool('bookmarks', () =>
+    server.registerTool(
+      'import_chrome_bookmarks',
     {
       description:
         'Import bookmarks from Google Chrome. Default profile is "Default". URLs already bookmarked in GhostPilot are skipped.',
       inputSchema: { profile: z.string().optional() },
     },
     async ({ profile }) => text(await importBookmarks(bookmarks, profile)),
+    ),
   );
 
-  server.registerTool(
-    'import_chrome_history',
+  tool('history', () =>
+    server.registerTool(
+      'import_chrome_history',
     {
       description:
         'Import history from Google Chrome. Chrome should be closed (we copy the locked DB to /tmp first either way). Default limit 5000 most-recent visits.',
@@ -559,11 +1153,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ profile, limit }) => text(await importHistory(history, { profile, limit })),
+    ),
   );
 
   // ── chrome-devtools parity wrappers ───────────────────────────────
-  server.registerTool(
-    'a11y_snapshot',
+  tool('inspect', () =>
+    server.registerTool(
+      'a11y_snapshot',
     {
       description:
         'Return a simplified accessibility tree for the page (role, name, value, focusable). Equivalent to chrome-devtools take_snapshot — useful for letting an LLM navigate by semantic role instead of CSS selectors.',
@@ -599,10 +1195,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         }));
       return text({ count: slim.length, nodes: slim });
     },
+    ),
   );
 
-  server.registerTool(
-    'emulate',
+  tool('emulate', () =>
+    server.registerTool(
+      'emulate',
     {
       description:
         'Apply device / network emulation overrides to the tab. Pass any subset: width+height (with optional deviceScaleFactor and mobile), userAgent, offline, downloadKbps + uploadKbps + latencyMs.',
@@ -660,10 +1258,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       }
       return text({ ok: true, applied: out });
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_emulation',
+  tool('emulate', () =>
+    server.registerTool(
+      'clear_emulation',
     {
       description: 'Clear all emulation overrides (metrics, user-agent, network conditions).',
       inputSchema: { tabId: z.string().optional() },
@@ -685,10 +1285,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       ]);
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'wait_for_text',
+  tool('inspect', () =>
+    server.registerTool(
+      'wait_for_text',
     {
       description:
         'Wait until the given text appears anywhere in document.body.innerText (default timeout 10000ms).',
@@ -718,43 +1320,140 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       );
       return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'upload_file',
+  tool('interact', () =>
+    server.registerTool(
+      'upload_file',
     {
       description:
-        'Set the files of an <input type="file"> element via DOM.setFileInputFiles. Pass absolute filesystem paths.',
+        'Attach file(s) to the page. Pass absolute filesystem paths in `files`.\n' +
+        '• `selector` — set the files directly on an existing `<input type="file">` that matches it (DOM.setFileInputFiles).\n' +
+        '• `clickSelector` — for buttons that open the OS file picker (e.g. a "Choose file" link, or Facebook\'s 📷 ' +
+        '"แนบรูปภาพหรือวิดีโอ" / "Attach a photo or video" comment button): GhostPilot arms a CDP file-chooser ' +
+        'interception, clicks that element (with a user gesture), and feeds the files when the picker opens — no ' +
+        'native dialog ever appears. Use this when a plain `selector` upload triggers the wrong composer or hits a ' +
+        'native dialog GhostPilot cannot fill.\n' +
+        'Provide exactly one of `selector` / `clickSelector`.',
       inputSchema: {
-        selector: z.string(),
         files: z.array(z.string()).min(1),
+        selector: z.string().optional(),
+        clickSelector: z.string().optional(),
+        timeoutMs: z.number().int().positive().optional(),
         tabId: z.string().optional(),
+        // Auto-retry params apply to the direct-input path only; the
+        // fileChooser path is single-shot (a retry would open a second
+        // OS picker — per plan §3 non-goals).
+        ...retryOptsSchema,
       },
     },
-    async ({ selector, files, tabId }) => {
+    async ({
+      selector,
+      clickSelector,
+      files,
+      timeoutMs,
+      tabId,
+      retries,
+      retry_delay_ms,
+      // wait_stable_ms / wait_timeout_ms intentionally ignored for upload —
+      // the input is usually display:none so a bounding-box wait would
+      // always time out. Selector lookup happens inside the retry loop.
+    }) => {
       const id = resolveTabId(tabId);
       requireTab(id);
-      // Get the DOM nodeId for the selector
-      const doc = (await tabManager.cdpSend(id, 'DOM.getDocument', {})) as {
-        root: { nodeId: number };
-      };
-      const found = (await tabManager.cdpSend(id, 'DOM.querySelector', {
-        nodeId: doc.root.nodeId,
-        selector,
-      })) as { nodeId: number };
-      if (!found.nodeId) {
-        return text({ ok: false, error: 'selector did not match any element' });
+
+      // ── file-chooser interception path (Playwright-style) ──────────────
+      // Some pages (Facebook comment photo button, many "Choose file" labels) call
+      // `input.click()` which opens the OS picker — GhostPilot can't fill that.
+      // Solution: turn on Page.setInterceptFileChooserDialog, click the trigger,
+      // catch Page.fileChooserOpened (gives the input's backendNodeId), then feed
+      // the files via DOM.setFileInputFiles({backendNodeId}). That both sets the
+      // files and cancels the native dialog.
+      if (clickSelector) {
+        await tabManager.cdpSend(id, 'Page.enable', {});
+        await tabManager.cdpSend(id, 'DOM.enable', {});
+        await tabManager.cdpSend(id, 'Page.setInterceptFileChooserDialog', { enabled: true });
+        try {
+          // Subscribe BEFORE the click to avoid the race.
+          const eventP = tabManager.waitForCdpEvent<{
+            backendNodeId?: number;
+            mode?: string;
+            frameId?: string;
+          }>(id, 'Page.fileChooserOpened', timeoutMs ?? 15000);
+          // Click the trigger element. evaluate() runs with userGesture=true, so the
+          // page's `input.click()` is allowed to open a chooser.
+          const clickRes = (await tabManager.evaluate(
+            id,
+            `(() => { const el = document.querySelector(${JSON.stringify(clickSelector)});
+              if (!el) return { ok:false, error:'clickSelector not found' };
+              el.scrollIntoView({ block:'center' });
+              el.click();
+              return { ok:true }; })()`,
+          )) as { ok: boolean; error?: string } | null;
+          if (!clickRes || !clickRes.ok) {
+            return text({ ok: false, error: clickRes?.error ?? 'clickSelector not found' });
+          }
+          const ev = await eventP;
+          if (ev?.backendNodeId == null) {
+            return text({ ok: false, error: 'fileChooserOpened fired without a backendNodeId' });
+          }
+          await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
+            files,
+            backendNodeId: ev.backendNodeId,
+          });
+          return text({ ok: true, files, via: 'fileChooser', mode: ev.mode });
+        } catch (err) {
+          return text({ ok: false, error: `fileChooser path failed: ${(err as Error).message}` });
+        } finally {
+          try {
+            await tabManager.cdpSend(id, 'Page.setInterceptFileChooserDialog', { enabled: false });
+          } catch {
+            /* noop */
+          }
+        }
       }
-      await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
-        files,
-        nodeId: found.nodeId,
-      });
-      return text({ ok: true, files });
+
+      // ── direct-input path (original behaviour) ────────────────────────
+      if (!selector) {
+        return text({ ok: false, error: 'provide either `selector` or `clickSelector`' });
+      }
+      // The whole getDocument → querySelector → setFileInputFiles sequence is
+      // idempotent (setting paths on the same input element repeats cleanly),
+      // so wrap it. "selector did not match" is non-transient → no retry.
+      const out = await withRetry(
+        async () => {
+          const doc = (await tabManager.cdpSend(id, 'DOM.getDocument', {})) as {
+            root: { nodeId: number };
+          };
+          const found = (await tabManager.cdpSend(id, 'DOM.querySelector', {
+            nodeId: doc.root.nodeId,
+            selector,
+          })) as { nodeId: number };
+          if (!found.nodeId) {
+            return { ok: false as const, error: 'selector did not match any element' };
+          }
+          await tabManager.cdpSend(id, 'DOM.setFileInputFiles', {
+            files,
+            nodeId: found.nodeId,
+          });
+          return { ok: true as const, files, via: 'directInput' as const };
+        },
+        {
+          retries,
+          retry_delay_ms,
+          label: `upload_file(${JSON.stringify(selector)})`,
+          validate: validateOkOrTransient,
+        },
+      );
+      return text(out);
     },
+    ),
   );
 
-  server.registerTool(
-    'handle_next_dialog',
+  tool('interact', () =>
+    server.registerTool(
+      'handle_next_dialog',
     {
       description:
         'Auto-respond to the next native JavaScript dialog (alert / confirm / prompt / beforeunload). Default behaviour is "accept". Use "dismiss" to cancel. promptText is sent to prompt() dialogs.',
@@ -780,11 +1479,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true, type: opening.type, message: opening.message });
     },
+    ),
   );
 
   // ── Performance trace + Lighthouse ────────────────────────────────
-  server.registerTool(
-    'performance_start_trace',
+  tool('performance', () =>
+    server.registerTool(
+      'performance_start_trace',
     {
       description:
         'Start a Chrome DevTools performance trace on the tab. Pair with performance_stop_trace to receive the trace JSON path.',
@@ -802,10 +1503,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true });
     },
+    ),
   );
 
-  server.registerTool(
-    'performance_stop_trace',
+  tool('performance', () =>
+    server.registerTool(
+      'performance_stop_trace',
     {
       description:
         'Stop a tracing session started by performance_start_trace. Reads the resulting trace stream and writes it to a JSON file in /tmp; returns the file path you can open in chrome://tracing or DevTools → Performance.',
@@ -839,10 +1542,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await fs.writeFile(path, chunks);
       return text({ ok: true, path, sizeBytes: Buffer.byteLength(chunks) });
     },
+    ),
   );
 
-  server.registerTool(
-    'lighthouse_audit',
+  tool('performance', () =>
+    server.registerTool(
+      'lighthouse_audit',
     {
       description:
         'Run a Lighthouse audit against the given URL (or the active tab\'s URL). Spawns a private headless Chrome via chrome-launcher — Google Chrome must be installed. Returns category scores plus the path to the full HTML report.',
@@ -921,11 +1626,13 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
         await chrome.kill().catch(() => {});
       }
     },
+    ),
   );
 
   // ── Media (downloadable videos / audios on the page) ──────────────
-  server.registerTool(
-    'list_media',
+  tool('media', () =>
+    server.registerTool(
+      'list_media',
     {
       description:
         'List downloadable media (video/audio/HLS playlist/DASH manifest) detected on the active tab — populated by network sniffing every response of the partition\'s session. HLS .m3u8 / DASH .mpd are playlists; segments need ffmpeg or yt-dlp to merge.',
@@ -936,10 +1643,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       requireTab(id);
       return text(mediaDetector.list(id));
     },
+    ),
   );
 
-  server.registerTool(
-    'download_media',
+  tool('media', () =>
+    server.registerTool(
+      'download_media',
     {
       description:
         "Download a media URL detected by list_media. Replays the request via the tab's session so cookies/headers match. The file shows up in Downloads.",
@@ -949,10 +1658,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       mediaDetector.download(partitionSession, url);
       return text({ ok: true, url });
     },
+    ),
   );
 
-  server.registerTool(
-    'clear_media',
+  tool('media', () =>
+    server.registerTool(
+      'clear_media',
     {
       description: 'Clear the media-detection list for the active tab.',
       inputSchema: { tabId: z.string().optional() },
@@ -963,21 +1674,25 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       mediaDetector.clear(id);
       return text({ ok: true });
     },
+    ),
   );
 
   // ── yt-dlp (HLS, DASH, YouTube, ~1500 sites) ──────────────────────
-  server.registerTool(
-    'ytdlp_status',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'ytdlp_status',
     {
       description:
         "Report whether yt-dlp is installed on this Mac and its version. yt-dlp handles HLS playlists, DASH manifests, and embedded videos from sites with anti-bot or DRM (YouTube, Twitter/X, Vimeo, ~1500 sites). Install with `brew install yt-dlp`.",
       inputSchema: { force: z.boolean().optional() },
     },
     async ({ force }) => text(await detectYtdlp(force ?? false)),
+    ),
   );
 
-  server.registerTool(
-    'download_with_ytdlp',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'download_with_ytdlp',
     {
       description:
         'Download a video/audio with yt-dlp. URL can be a direct media file, an HLS .m3u8, a DASH .mpd, OR a page URL (YouTube/Twitter/Vimeo/...). Returns immediately; progress is reported via the GhostPilot UI. Saves to ~/Downloads by default.',
@@ -1000,15 +1715,18 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       });
       return text({ ok: true, message: 'Download started — see the Media panel for progress.' });
     },
+    ),
   );
 
-  server.registerTool(
-    'list_ytdlp_jobs',
+  tool('ytdlp', () =>
+    server.registerTool(
+      'list_ytdlp_jobs',
     {
       description: 'List in-progress and recent yt-dlp downloads.',
       inputSchema: {},
     },
     async () => text(ytdlp.list()),
+    ),
   );
 
   // ── Skills (reusable browser automation playbooks) ────────────────
@@ -1019,8 +1737,9 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
   //   2. If a skill matches, get_skill and follow it.
   //   3. After a successful task without a matching skill, save_skill so the
   //      next run is fast.
-  server.registerTool(
-    'list_skills',
+  tool('skills', () =>
+    server.registerTool(
+      'list_skills',
     {
       description:
         'List saved browser-automation skills (no body). **Call this first when starting any non-trivial browser task** — if a skill matches the target site/action, fetch it with get_skill and follow its steps instead of improvising. Filter by domain (e.g. "facebook.com") or free-text query.',
@@ -1030,10 +1749,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async ({ domain, query }) => text(await skills.list({ domain, query })),
+    ),
   );
 
-  server.registerTool(
-    'get_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'get_skill',
     {
       description:
         'Fetch the full markdown body of a skill (steps, selectors, pitfalls). Records that the skill was used so most-used skills float to the top of list_skills.',
@@ -1045,10 +1766,12 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await skills.recordUse(id);
       return text(skill);
     },
+    ),
   );
 
-  server.registerTool(
-    'save_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'save_skill',
     {
       description:
         'Save (or update) a reusable skill. **After completing any non-trivial browser task without a matching skill, call this** with what you did — exact selectors, key steps, pitfalls — so future runs short-circuit. id is a slug like "facebook-search-friend"; if omitted, derived from name. body is markdown.',
@@ -1062,20 +1785,708 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       },
     },
     async (input) => text(await skills.save(input)),
+    ),
   );
 
-  server.registerTool(
-    'delete_skill',
+  tool('skills', () =>
+    server.registerTool(
+      'delete_skill',
     {
       description: 'Remove a skill by id. Use only when the skill is broken or obsolete.',
       inputSchema: { id: z.string() },
     },
     async ({ id }) => text({ ok: await skills.delete(id) }),
+    ),
+  );
+
+  // ── Desktop / System ──────────────────────────────────────────────
+  // System-level captures that look outside the browser tab. Currently
+  // desktop_screenshot + set_window_bounds; future additions (window list,
+  // clipboard, etc.) can share this category so TCC + chrome-window concerns
+  // live in one place.
+  tool('desktop', () =>
+    server.registerTool(
+      'desktop_screenshot',
+    {
+      description:
+        'Capture the Mac desktop (all displays, or a specific one) to a PNG ' +
+        'file using /usr/sbin/screencapture. Requires GhostPilot.app to hold ' +
+        'Screen Recording TCC permission. Returns { path, size_bytes, width, height }.',
+      inputSchema: {
+        path: z
+          .string()
+          .optional()
+          .describe(
+            'Absolute output path. Defaults to /tmp/ghostpilot-snap-<isoTimestamp>.png.',
+          ),
+        display: z
+          .number()
+          .int()
+          .min(0)
+          .optional()
+          .describe(
+            '0-based display index (0 = primary). Omit to capture all displays into one PNG.',
+          ),
+      },
+    },
+    async ({ path: outPath, display }) => {
+      if (headless) return text({ ok: false, error: HEADLESS_ERROR });
+      return text(await captureDesktopScreenshot({ path: outPath, display }));
+    },
+    ),
+  );
+
+  tool('desktop', () =>
+    server.registerTool(
+      'set_window_bounds',
+    {
+      description:
+        'Resize and/or move the GhostPilot main window. Omitted axes keep ' +
+        'their current value; set center:true to center on the active display ' +
+        '(ignores x/y). New bounds are persisted to <userData>/window-bounds.json ' +
+        'so they survive a relaunch. Returns the bounds as set plus the display ' +
+        'the window ended up on.',
+      inputSchema: {
+        x: z.number().int().optional(),
+        y: z.number().int().optional(),
+        width: z.number().int().min(200).optional(),
+        height: z.number().int().min(200).optional(),
+        center: z
+          .boolean()
+          .optional()
+          .describe('If true, ignore x/y and center on the active display.'),
+      },
+    },
+    async ({ x, y, width, height, center }) => {
+      if (headless) return text({ ok: false, error: HEADLESS_ERROR });
+      if (mainWindow.isDestroyed()) {
+        throw new Error('set_window_bounds: main window has been destroyed');
+      }
+      const cur = mainWindow.getBounds();
+      let next = {
+        x: typeof x === 'number' ? x : cur.x,
+        y: typeof y === 'number' ? y : cur.y,
+        width: typeof width === 'number' ? width : cur.width,
+        height: typeof height === 'number' ? height : cur.height,
+      };
+      if (center) {
+        // Pick the display the window currently sits on, then center within
+        // its work area (excludes Menu Bar + Dock).
+        const display = screen.getDisplayMatching(cur);
+        const wa = display.workArea;
+        next = {
+          x: Math.round(wa.x + (wa.width - next.width) / 2),
+          y: Math.round(wa.y + (wa.height - next.height) / 2),
+          width: next.width,
+          height: next.height,
+        };
+      }
+      mainWindow.setBounds(next);
+      const applied = mainWindow.getBounds();
+      // Persist immediately — don't rely on the debounced 'resize' listener,
+      // since programmatic setBounds() may not fire it in every Electron
+      // version.
+      await saveWindowBounds(applied);
+      const display = screen.getDisplayMatching(applied);
+      return text({
+        x: applied.x,
+        y: applied.y,
+        width: applied.width,
+        height: applied.height,
+        display: {
+          id: display.id,
+          scale_factor: display.scaleFactor,
+          work_area: display.workArea,
+        },
+      });
+    },
+    ),
+  );
+
+  // ── Locators (Playwright-style stable selectors, Plan #2) ─────────
+  // 4 tools (get_by_role / get_by_text / get_by_label / get_by_test_id) that
+  // resolve elements by semantic attributes and return a CSS selector + AX
+  // role/name. Lives in locator-tools.ts to keep this file readable.
+  registerLocatorTools(
+    server,
+    { tabManager },
+    tool,
+    resolveTabId,
+    requireTab,
+  );
+
+  // ── External Chrome (raw CDP over WS) ─────────────────────────────
+  // Drives a SEPARATE Chrome process (e.g. ~/.chrome-agent at :9222 used for
+  // LINE Chrome Web Store extension). Embedded tabs stay on the existing
+  // tools; these `ext_*` tools are a parallel surface keyed by `cdp_url`.
+  // Backend = raw CDP over WebSocket (same mental model as the embedded
+  // `webContents.debugger` path; no puppeteer-core needed).
+  tool('ext', () =>
+    server.registerTool(
+      'ext_list_tabs',
+      {
+        description:
+          'List tabs (pages, iframes, service workers, extension popups) of an EXTERNAL Chrome instance reachable via Chrome DevTools Protocol. Default cdp_url = http://127.0.0.1:9222.',
+        inputSchema: {
+          cdp_url: z.string().optional(),
+        },
+      },
+      async ({ cdp_url }) => {
+        const url = cdp_url ?? 'http://127.0.0.1:9222';
+        const { listExternalTabs } = await import('./ext-cdp.js');
+        const tabs = await listExternalTabs(url);
+        return text(tabs);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_navigate',
+      {
+        description:
+          'Navigate the target page of an external Chrome to a URL. If `target_id` is omitted, defaults to the first page-type tab (matches ext_list_tabs[0] of type=page).',
+        inputSchema: {
+          url: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ url, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = await session.send('Page.navigate', { url });
+        return text(r);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_evaluate',
+      {
+        description:
+          'Run JavaScript in the page context of an external Chrome target and return the value. Use a single expression or IIFE returning a JSON-serializable value.',
+        inputSchema: {
+          script: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ script, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = (await session.send('Runtime.evaluate', {
+          expression: script,
+          returnByValue: true,
+          awaitPromise: true,
+        })) as {
+          result?: { value?: unknown; description?: string };
+          exceptionDetails?: { text?: string; exception?: { description?: string } };
+        };
+        if (r.exceptionDetails) {
+          const msg =
+            r.exceptionDetails.exception?.description ??
+            r.exceptionDetails.text ??
+            'evaluate threw';
+          throw new Error(`ext_evaluate: ${msg}`);
+        }
+        return text(r.result?.value ?? null);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_click',
+      {
+        description:
+          'Click the first element matching the CSS selector inside an external Chrome target. Implementation = querySelector + element.click() via Runtime.evaluate (NOT a CDP-level trusted-event click; for trusted events use ext_evaluate with a custom dispatch).',
+        inputSchema: {
+          selector: z.string(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ selector, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const sel = JSON.stringify(selector);
+        const r = (await session.send('Runtime.evaluate', {
+          expression: `(() => { const el = document.querySelector(${sel}); if (!el) return { ok:false, error:'not found' }; el.click(); return { ok:true }; })()`,
+          returnByValue: true,
+        })) as { result?: { value?: { ok: boolean; error?: string } } };
+        return text(r.result?.value ?? null);
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_a11y_snapshot',
+      {
+        description:
+          'Return a simplified accessibility tree (role, name, value, parentId, childIds) of the external Chrome target. Equivalent of a11y_snapshot but for the external session. Defaults interestingOnly=true (drops ignored/role-less nodes).',
+        inputSchema: {
+          interestingOnly: z.boolean().optional(),
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+        },
+      },
+      async ({ interestingOnly, cdp_url, target_id }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const tree = (await session.send('Accessibility.getFullAXTree', {})) as {
+          nodes: Array<{
+            nodeId: string;
+            role?: { value: string };
+            name?: { value: string };
+            value?: { value: unknown };
+            ignored?: boolean;
+            childIds?: string[];
+            parentId?: string;
+          }>;
+        };
+        const useInteresting = interestingOnly !== false;
+        const slim = tree.nodes
+          .filter((n) => !useInteresting || (!n.ignored && (n.role?.value ?? 'none') !== 'none'))
+          .map((n) => ({
+            nodeId: n.nodeId,
+            role: n.role?.value,
+            name: n.name?.value,
+            value: n.value?.value,
+            parentId: n.parentId,
+            childIds: n.childIds,
+          }));
+        return text({ count: slim.length, nodes: slim });
+      },
+    ),
+  );
+
+  tool('ext', () =>
+    server.registerTool(
+      'ext_screenshot',
+      {
+        description:
+          'PNG screenshot of an external Chrome target (default = first page). Returned as base64 image content. Uses CDP Page.captureScreenshot.',
+        inputSchema: {
+          cdp_url: z.string().optional(),
+          target_id: z.string().optional(),
+          full_page: z.boolean().optional(),
+        },
+      },
+      async ({ cdp_url, target_id, full_page }) => {
+        const u = cdp_url ?? 'http://127.0.0.1:9222';
+        const { getSession } = await import('./ext-cdp.js');
+        const session = await getSession({ cdpUrl: u, targetId: target_id });
+        const r = (await session.send('Page.captureScreenshot', {
+          format: 'png',
+          captureBeyondViewport: full_page === true,
+        })) as { data?: string };
+        if (!r.data) throw new Error('ext_screenshot: empty payload');
+        return {
+          content: [
+            { type: 'image' as const, data: r.data, mimeType: 'image/png' },
+          ],
+        };
+      },
+    ),
+  );
+
+  // ── FB Chat overlay hide (plan #15 / issue #2) ────────────────────
+  // fbChatHideState is module-level (see top of file) — survives per-request
+  // McpServer recreation.
+
+  tool('interact', () =>
+    server.registerTool(
+      'hide_facebook_chat',
+      {
+        description:
+          'Visually hide Facebook Messenger chat popout overlays on a specific tab so they do not occlude automation click targets (e.g. the Post button). ' +
+          'Uses CSS injection (display:none) — no network traffic is blocked and Messenger.com itself is unaffected. ' +
+          'mode:"block" injects the CSS immediately and persists it across full-page navigations and SPA route changes via an Electron-native webContents listener (did-finish-load + did-navigate-in-page). ' +
+          'mode:"off" removes both the live style tag and the navigation listener. ' +
+          'scope:"popouts" (default) targets chat bubbles and dialogs only; scope:"full_sidebar" also hides the right-rail Contacts sidebar.',
+        inputSchema: {
+          tab_id: z.string().optional(),
+          mode: z.enum(['block', 'off']),
+          scope: z.enum(['popouts', 'full_sidebar']).optional(),
+        },
+      },
+      async ({ tab_id, mode, scope = 'popouts' }) => {
+        const id = resolveTabId(tab_id);
+        requireTab(id);
+
+        if (mode === 'off') {
+          const state = fbChatHideState.get(id);
+          // Remove Electron-native nav hook (primary persistence mechanism).
+          state?.unsubNav();
+          // Remove CDP hook (belt-and-suspenders).
+          if (state?.scriptId) {
+            await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
+              identifier: state.scriptId,
+            }).catch(() => { /* tab may have navigated, CDP session gone — ignore */ });
+          }
+          fbChatHideState.delete(id);
+          // Remove the live style tag from the current document.
+          await tabManager.evaluate(
+            id,
+            `(function(){var e=document.getElementById('__ghostpilot_fb_hide__');if(e)e.remove();})()`,
+          );
+          return text({ ok: true, mode: 'off', removed: !!state });
+        }
+
+        // mode === 'block'
+        const popoutSelectors = [
+          '[aria-label*="บทสนทนาที่เปิดอยู่กับ" i]',
+          '[aria-label*="Conversation with" i]',
+          'div[role="dialog"][aria-labelledby*="messenger" i]',
+          'div[aria-label*="messenger" i][role="dialog"]',
+        ];
+        const sidebarSelectors = [
+          '[aria-label*="Contacts" i]',
+          '[aria-label*="รายชื่อ" i]',
+        ];
+
+        const appliedSelectors =
+          scope === 'full_sidebar'
+            ? [...popoutSelectors, ...sidebarSelectors]
+            : popoutSelectors;
+
+        const css = appliedSelectors.join(',\n') + ' { display: none !important; }';
+        // Self-contained IIFE — safe as both an evaluate() arg and as the
+        // addScriptToEvaluateOnNewDocument source (runs before any page script,
+        // falls back to documentElement when head isn't ready yet).
+        const injectIIFE = `(function(){
+  var STYLE_ID='__ghostpilot_fb_hide__';
+  var el=document.getElementById(STYLE_ID);
+  if(!el){el=document.createElement('style');el.id=STYLE_ID;(document.head||document.documentElement).appendChild(el);}
+  el.textContent=${JSON.stringify(css)};
+})();`;
+
+        // 1. Apply immediately to the live document.
+        await tabManager.evaluate(id, injectIIFE);
+
+        // 2. Electron-native: re-inject after every full-page load + SPA nav.
+        //    This is the authoritative fix for the v0.8.0 persistence bug —
+        //    Page.addScriptToEvaluateOnNewDocument doesn't survive CDP session
+        //    rebinds that happen on full navigation in Electron WebContentsView.
+        const oldState = fbChatHideState.get(id);
+        oldState?.unsubNav(); // remove stale listener before registering a new one
+        const unsubNav = tabManager.registerNavHook(id, () => {
+          tabManager.evaluate(id, injectIIFE).catch(() => { /* tab gone — ignore */ });
+        });
+
+        // 3. Belt-and-suspenders: also keep the CDP hook for environments where
+        //    it does work (e.g. in-process navigations without full session rebind).
+        if (oldState?.scriptId) {
+          await tabManager.cdpSend(id, 'Page.removeScriptToEvaluateOnNewDocument', {
+            identifier: oldState.scriptId,
+          }).catch(() => {});
+        }
+        let scriptId: string | undefined;
+        try {
+          const hookResult = (await tabManager.cdpSend(
+            id,
+            'Page.addScriptToEvaluateOnNewDocument',
+            { source: injectIIFE },
+          )) as { identifier: string };
+          scriptId = hookResult.identifier;
+        } catch {
+          // CDP hook is optional — Electron-native listener is the real fix.
+        }
+
+        fbChatHideState.set(id, { scriptId, injectIIFE, unsubNav });
+
+        return text({ ok: true, mode: 'block', scope, applied_selectors: appliedSelectors });
+      },
+    ),
+  );
+
+  // ── Input — coordinate-based mouse + keyboard (Computer-Use parity) ─────
+  //
+  // Decisions (Phase 4, 2026-05-24):
+  //   1. Coordinates: device pixels (auto-divided by window.devicePixelRatio).
+  //      The model reads device-pixel screenshots — pass coords directly.
+  //   2. Category: 'input' (clean, distinct from DOM-selector 'interact').
+  //   3. Key convention: Playwright names ('Enter','Tab','Ctrl+A') mapped to CDP inside.
+  //   4. Scroll direction: positive deltaY = scroll down (web convention).
+  //   5. No composite vision_click — tools stay atomic; model orchestrates.
+  //   6. file_select: skipped — existing upload_file covers it correctly.
+  //   7. DPR caching: evaluate per-call (cheap; avoids stale state).
+  //   8. Drag interpolation: default 10 steps (adjustable via `steps` param).
+
+  /** Resolve device-pixel coords to CSS-pixel coords for CDP.
+   *  CDP Input events expect CSS pixels; screenshots are device pixels on Retina. */
+  async function toCssCoords(
+    tabId: string,
+    x: number,
+    y: number,
+  ): Promise<{ cssX: number; cssY: number }> {
+    const dpr =
+      ((await tabManager.evaluate(tabId, 'window.devicePixelRatio')) as number | null) ?? 1;
+    return { cssX: x / dpr, cssY: y / dpr };
+  }
+
+  // ── Key-name → CDP params mapping ────────────────────────────────────────
+  interface CdpKeyInfo {
+    key: string;
+    code: string;
+    keyCode: number;
+  }
+
+  const KEY_TABLE: Record<string, CdpKeyInfo> = {
+    enter:      { key: 'Enter',     code: 'Enter',      keyCode: 13 },
+    return:     { key: 'Enter',     code: 'Enter',      keyCode: 13 },
+    tab:        { key: 'Tab',       code: 'Tab',        keyCode: 9  },
+    escape:     { key: 'Escape',    code: 'Escape',     keyCode: 27 },
+    esc:        { key: 'Escape',    code: 'Escape',     keyCode: 27 },
+    backspace:  { key: 'Backspace', code: 'Backspace',  keyCode: 8  },
+    delete:     { key: 'Delete',    code: 'Delete',     keyCode: 46 },
+    arrowup:    { key: 'ArrowUp',   code: 'ArrowUp',    keyCode: 38 },
+    arrowdown:  { key: 'ArrowDown', code: 'ArrowDown',  keyCode: 40 },
+    arrowleft:  { key: 'ArrowLeft', code: 'ArrowLeft',  keyCode: 37 },
+    arrowright: { key: 'ArrowRight',code: 'ArrowRight', keyCode: 39 },
+    up:         { key: 'ArrowUp',   code: 'ArrowUp',    keyCode: 38 },
+    down:       { key: 'ArrowDown', code: 'ArrowDown',  keyCode: 40 },
+    left:       { key: 'ArrowLeft', code: 'ArrowLeft',  keyCode: 37 },
+    right:      { key: 'ArrowRight',code: 'ArrowRight', keyCode: 39 },
+    home:       { key: 'Home',      code: 'Home',       keyCode: 36 },
+    end:        { key: 'End',       code: 'End',        keyCode: 35 },
+    pageup:     { key: 'PageUp',    code: 'PageUp',     keyCode: 33 },
+    pagedown:   { key: 'PageDown',  code: 'PageDown',   keyCode: 34 },
+    space:      { key: ' ',         code: 'Space',      keyCode: 32 },
+    f1:  { key: 'F1',  code: 'F1',  keyCode: 112 }, f2:  { key: 'F2',  code: 'F2',  keyCode: 113 },
+    f3:  { key: 'F3',  code: 'F3',  keyCode: 114 }, f4:  { key: 'F4',  code: 'F4',  keyCode: 115 },
+    f5:  { key: 'F5',  code: 'F5',  keyCode: 116 }, f6:  { key: 'F6',  code: 'F6',  keyCode: 117 },
+    f10: { key: 'F10', code: 'F10', keyCode: 121 }, f12: { key: 'F12', code: 'F12', keyCode: 123 },
+  };
+
+  /** Parse 'Ctrl+A', 'Meta+V', 'Shift+Enter' etc. into CDP params. */
+  function parseKeyCombo(input: string): { info: CdpKeyInfo; modifiers: number } {
+    const parts = input.split('+');
+    let modifiers = 0;
+    const keyPart = parts[parts.length - 1]!;
+    for (const p of parts.slice(0, -1)) {
+      const m = p.toLowerCase().trim();
+      if (m === 'ctrl' || m === 'control') modifiers |= 2;
+      else if (m === 'shift')              modifiers |= 8;
+      else if (m === 'alt')               modifiers |= 1;
+      else if (m === 'meta' || m === 'cmd' || m === 'command') modifiers |= 4;
+    }
+    const lookup = KEY_TABLE[keyPart.toLowerCase()];
+    const info: CdpKeyInfo = lookup ?? {
+      key: keyPart,
+      code: keyPart.length === 1 ? `Key${keyPart.toUpperCase()}` : keyPart,
+      keyCode: keyPart.toUpperCase().charCodeAt(0),
+    };
+    return { info, modifiers };
+  }
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_move',
+      {
+        description:
+          'Move the mouse cursor to (x, y) in device pixels (as seen in a screenshot). ' +
+          'GhostPilot divides by window.devicePixelRatio internally — pass screenshot coords directly. ' +
+          'Useful to trigger hover states or tooltips before clicking.',
+        inputSchema: {
+          x: z.number().describe('Horizontal device-pixel coordinate'),
+          y: z.number().describe('Vertical device-pixel coordinate'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', cssX, cssY);
+        return text({ ok: true, css_x: cssX, css_y: cssY });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_click',
+      {
+        description:
+          'Click at (x, y) in device pixels. Emits trusted CDP pointer events that bypass SPA ' +
+          'event-handler restrictions (unlike the DOM-selector click tool). ' +
+          'button: "left"|"right"|"middle". count=2 for double-click.',
+        inputSchema: {
+          x: z.number(),
+          y: z.number(),
+          button: z.enum(['left', 'right', 'middle']).default('left'),
+          count: z.number().int().min(1).max(3).default(1).describe('1=single, 2=double, 3=triple'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, button, count, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', cssX, cssY);
+        await tabManager.cdpMouseEvent(id, 'mousePressed', cssX, cssY, button, count);
+        await tabManager.cdpMouseEvent(id, 'mouseReleased', cssX, cssY, button, count);
+        return text({ ok: true, css_x: cssX, css_y: cssY, button, count });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'mouse_drag',
+      {
+        description:
+          'Click-drag from (x1,y1) to (x2,y2) in device pixels. Interpolates `steps` ' +
+          'mouseMoved events between start and end for smooth drag (required by canvas, ' +
+          'sortable-list, and slider UIs). Default steps=10.',
+        inputSchema: {
+          x1: z.number(), y1: z.number(),
+          x2: z.number(), y2: z.number(),
+          steps: z.number().int().min(2).max(50).default(10),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x1, y1, x2, y2, steps, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX: sx, cssY: sy } = await toCssCoords(id, x1, y1);
+        const { cssX: ex, cssY: ey } = await toCssCoords(id, x2, y2);
+        await tabManager.cdpMouseEvent(id, 'mouseMoved', sx, sy);
+        await tabManager.cdpMouseEvent(id, 'mousePressed', sx, sy, 'left', 1);
+        for (let i = 1; i <= steps; i++) {
+          const t = i / steps;
+          await tabManager.cdpMouseEvent(id, 'mouseMoved', sx + (ex - sx) * t, sy + (ey - sy) * t);
+        }
+        await tabManager.cdpMouseEvent(id, 'mouseReleased', ex, ey, 'left', 1);
+        return text({ ok: true, from: { css_x: sx, css_y: sy }, to: { css_x: ex, css_y: ey }, steps });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'keyboard_type',
+      {
+        description:
+          'Insert text into the focused element via Input.insertText — works on any focused ' +
+          'input, contenteditable, or rich editor. Focus the target first with mouse_click. ' +
+          'Prefer this over keyboard_key for bulk text insertion.',
+        inputSchema: {
+          text: z.string().describe('Text to insert (Unicode OK, including Thai)'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ text: t, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        await tabManager.cdpInsertText(id, t);
+        return text({ ok: true, length: t.length });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'keyboard_key',
+      {
+        description:
+          'Press a named key or key combo. Uses Playwright shorthand names: ' +
+          '"Enter", "Tab", "Escape", "Backspace", "Delete", "ArrowUp/Down/Left/Right", ' +
+          '"Home", "End", "PageUp", "PageDown", "Space", "F1"–"F12". ' +
+          'Combos: "Ctrl+A", "Meta+V", "Shift+Tab", "Ctrl+Shift+I". ' +
+          'Meta = Cmd on Mac. Case-insensitive.',
+        inputSchema: {
+          key: z.string().describe('Key name or combo (e.g. "Enter", "Ctrl+A", "ArrowDown")'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ key, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { info, modifiers } = parseKeyCombo(key);
+        await tabManager.cdpKeyEvent(id, 'keyDown', info.key, info.code, info.keyCode, modifiers);
+        await tabManager.cdpKeyEvent(id, 'keyUp',   info.key, info.code, info.keyCode, modifiers);
+        return text({ ok: true, key: info.key, code: info.code, modifiers });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'scroll',
+      {
+        description:
+          'Scroll the viewport at (x, y) by (delta_x, delta_y) device pixels. ' +
+          'Positive delta_y = scroll down (web convention). ' +
+          'Coordinates are device pixels; delta is also scaled by DPR internally.',
+        inputSchema: {
+          x: z.number().describe('Horizontal device-pixel position to scroll at'),
+          y: z.number().describe('Vertical device-pixel position to scroll at'),
+          delta_x: z.number().default(0).describe('Horizontal scroll distance (device px, + = right)'),
+          delta_y: z.number().default(0).describe('Vertical scroll distance (device px, + = down)'),
+          tabId: z.string().optional(),
+        },
+      },
+      async ({ x, y, delta_x, delta_y, tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const { cssX, cssY } = await toCssCoords(id, x, y);
+        const dpr =
+          ((await tabManager.evaluate(id, 'window.devicePixelRatio')) as number | null) ?? 1;
+        // synthesizeScrollGesture distance is opposite sign to scroll direction
+        await tabManager.cdpSend(id, 'Input.synthesizeScrollGesture', {
+          x: cssX,
+          y: cssY,
+          xDistance: -(delta_x / dpr),
+          yDistance: -(delta_y / dpr),
+        });
+        return text({ ok: true, css_x: cssX, css_y: cssY });
+      },
+    ),
+  );
+
+  tool('input', () =>
+    server.registerTool(
+      'get_viewport_info',
+      {
+        description:
+          'Return viewport dimensions and devicePixelRatio. Use this to understand the ' +
+          'relationship between screenshot pixel coordinates and CSS layout coordinates. ' +
+          'All mouse/scroll tools accept device pixels directly — you do not need to normalize ' +
+          'manually, but this tool is useful for sanity-checking or computing relative positions.',
+        inputSchema: { tabId: z.string().optional() },
+      },
+      async ({ tabId }) => {
+        const id = resolveTabId(tabId);
+        requireTab(id);
+        const info = (await tabManager.evaluate(
+          id,
+          '({ css_width: window.innerWidth, css_height: window.innerHeight, device_pixel_ratio: window.devicePixelRatio })',
+        )) as { css_width: number; css_height: number; device_pixel_ratio: number } | null;
+        if (!info) throw new Error('get_viewport_info: evaluate returned null');
+        return text({
+          css_width: info.css_width,
+          css_height: info.css_height,
+          device_pixel_ratio: info.device_pixel_ratio,
+          screenshot_width:  Math.round(info.css_width  * info.device_pixel_ratio),
+          screenshot_height: Math.round(info.css_height * info.device_pixel_ratio),
+        });
+      },
+    ),
   );
 
   // ── Updates ───────────────────────────────────────────────────────
-  server.registerTool(
-    'check_for_updates',
+  tool('lifecycle', () =>
+    server.registerTool(
+      'check_for_updates',
     {
       description:
         'Check whether a newer GhostPilot release is available. Returns current version, latest version, and the upgrade URL.',
@@ -1085,5 +2496,35 @@ export function registerTools(server: McpServer, deps: ToolDeps): void {
       await updateChecker.checkNow(force ?? false);
       return text(updateChecker.status());
     },
+    ),
   );
+
+  // ── Introspection ─────────────────────────────────────────────────
+  // Always-on lifecycle tool so operators (and the LLM) can see what got
+  // included and what got filtered without grepping the codebase or
+  // restarting with different env vars.
+  tool('lifecycle', () =>
+    server.registerTool(
+      'tool_categories',
+    {
+      description:
+        'Report which tool categories are enabled in this GhostPilot session and how many tools that translates to. Useful for debugging an unexpectedly-small tool inventory caused by the GHOSTPILOT_TOOLS env var.',
+      inputSchema: {},
+    },
+    async () =>
+      text({
+        enabled_categories: sortCategories(enabled),
+        available_categories: [...ALL_CATEGORIES],
+        enabled_tools_count: enabledCount,
+        total_tools_count: totalCount,
+      }),
+    ),
+  );
+
+  return {
+    enabledCategories: sortCategories(enabled),
+    availableCategories: [...ALL_CATEGORIES],
+    enabledToolsCount: enabledCount,
+    totalToolsCount: totalCount,
+  };
 }

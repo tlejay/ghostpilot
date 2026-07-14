@@ -1,6 +1,6 @@
 {
   "name": "ghostpilot",
-  "version": "0.3.0",
+  "version": "0.8.1",
   "private": true,
   "description": "GhostPilot — a Chrome-like Mac browser with an embedded MCP server, so Claude (or any MCP client) can pilot your everyday browsing.",
   "homepage": "https://madebytle.com",
@@ -30,8 +30,11 @@
     "patch-electron": "node scripts/patch-electron-dev.mjs",
     "pack": "pnpm run assets && electron-vite build && electron-builder --mac --dir",
     "dist": "pnpm run assets && electron-vite build && electron-builder --mac",
+    "gen:types": "electron-vite build && electron out/main/index.js --gen-types types/ghostpilot-tools.d.ts",
     "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
-    "test": "pnpm run build && playwright test",
+    "test": "pnpm run test:unit && pnpm run test:integration && pnpm run build && playwright test",
+    "test:unit": "node --experimental-strip-types --test src/main/mcp/*.test.ts tests/unit/*.test.ts",
+    "test:integration": "node --experimental-strip-types --test tests/integration/*.test.ts",
     "test:ui": "playwright test --reporter=list",
     "test:headed": "playwright test --headed"
   },
@@ -45,6 +48,7 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "sql.js": "^1.14.1",
+    "ws": "^8.20.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {
@@ -54,6 +58,7 @@
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@types/sql.js": "^1.4.11",
+    "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^4.3.4",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
@@ -83,6 +88,14 @@
       {
         "from": "assets/notices.json",
         "to": "notices.json"
+      },
+      {
+        "from": "src/main/mcp/tools.ts",
+        "to": "src/main/mcp/tools.ts"
+      },
+      {
+        "from": "src/main/mcp/locator-tools.ts",
+        "to": "src/main/mcp/locator-tools.ts"
       }
     ],
     "asarUnpack": [

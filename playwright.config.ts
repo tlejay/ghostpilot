@@ -2,7 +2,11 @@ import { defineConfig } from '@playwright/test';
 import path from 'node:path';
 
 export default defineConfig({
-  testDir: './tests',
+  // Playwright drives the built electron app — only the UI specs need it.
+  // Node-test runner is used for tests/unit/ + tests/integration/ (pure-TS,
+  // no electron required); see `test:unit` / `test:integration` scripts in
+  // package.json.
+  testDir: './tests/ui',
   timeout: 30_000,
   retries: 0,
   reporter: [['list'], ['html', { outputFolder: 'test-results/report', open: 'never' }]],
