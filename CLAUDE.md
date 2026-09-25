@@ -107,7 +107,10 @@ App เปิด → MCP server ขึ้นที่ `http://127.0.0.1:9223/mcp
 claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
 ```
 
-### Tool surface (51 ตัว)
+### Tool surface
+
+> ⚠️ ตารางด้านล่างเป็นของเก่า (51 ตัว) — ปัจจุบัน `tools/list` คืน **84 ตัว** (26 ก.ย. 2026) ตารางที่ถูกต้องอยู่ใน README.md
+> test `tool-groups.integration.test.ts` กับ `types/ghostpilot-tools.d.ts` ยังนับ 76 อยู่ → `pnpm test:unit` fail จนกว่าจะอัปเดตทั้งคู่
 
 | Group | Tools |
 |-------|-------|
@@ -168,6 +171,15 @@ claude mcp add --transport http ghostpilot http://127.0.0.1:9223/mcp
 - ✅ `assets/notices.json` ครบทุก prod dep (102 packages, MIT/ISC/BSD-2/3)
 - ✅ About window มี link ไป madebytle.com + ปุ่มเปิด Licenses
 - ✅ README.md + CLAUDE.md ปัจจุบัน
+
+## README images (`docs/`)
+
+ภาพใน README ถ่ายจากแอปจริง (26 ก.ย. 2026 ด้วย /kiki-gh-readme) — **ไม่ใช่ข้อมูลจริงของ Tle**:
+- เปิดแอปด้วย Playwright `_electron` + `--user-data-dir=<scratch>` + `AI_BROWSER_PROFILE=demo` + `AI_BROWSER_MCP_PORT=19223` → โปรไฟล์ว่างใหม่ทุกครั้ง
+- ภาพหน้าต่าง = `win.webContents.capturePage()` (UI) + `view.webContents.capturePage()` ของแท็บ ต่อกันที่ `y = toolbarHeight`
+- ช่อง URL ของหน้า New Tab โชว์ path `file://…/newtab.html` ในเครื่อง → ต้องเคลียร์ก่อนถ่ายทุกครั้ง
+- `demo.gif` = MCP call จริง (navigate → get_by_role → click → type_text → click → wait_for_text → get_page_text) บน wikipedia.org
+- `hero.png` / `social-preview.png` ประกอบจาก HTML · UI เปลี่ยนเมื่อไหร่ให้ถ่ายใหม่ทั้งชุด
 
 ## Keyboard shortcuts (built into menu)
 
