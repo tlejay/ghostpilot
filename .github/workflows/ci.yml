@@ -13,7 +13,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node-version: ['20.x', '22.x']
+        # pnpm 11 needs Node 22.13+, so Node 20 is not in the matrix.
+        node-version: ['22.x', '24.x']
 
     steps:
       - uses: actions/checkout@v4
@@ -33,14 +34,10 @@ jobs:
       - name: Typecheck
         run: pnpm typecheck
 
-      # node --experimental-strip-types requires Node 22.6+ — tests are skipped on Node 20.
-      # Typecheck above still validates TS correctness on both versions.
       - name: Unit tests
-        if: startsWith(matrix.node-version, '22')
         run: pnpm test:unit
 
       - name: Integration tests
-        if: startsWith(matrix.node-version, '22')
         run: pnpm test:integration
 
       # Playwright UI tests drive a live Electron app — not runnable on headless CI.
