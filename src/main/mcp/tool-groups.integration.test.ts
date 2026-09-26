@@ -63,22 +63,25 @@ test('histogram covers every category the source uses', () => {
   }
 });
 
-test('total tool count matches plan §3 (~57 + 1 introspection + 2 desktop + 6 ext + 4 locator + 1 har + 5 ghostpilot-profile)', () => {
+test('total tool count matches plan §3 + Plan #8 CDP Input tools', () => {
   const histo = buildHistogram();
   const total = Object.values(histo).reduce((a, b) => a + b, 0);
   // 57 pre-existing tools + tool_categories (lifecycle) + desktop_screenshot
   //  + set_window_bounds + 6 ext_* + 4 locator_* (Plan #2) + export_har (Plan #6)
-  //  + 5 ghostpilot-profile tools (Plan #5: list/current/create/delete/switch) = 76.
-  assert.equal(total, 76, `expected 76 total tool registrations, got ${total}`);
+  //  + 5 ghostpilot-profile tools (Plan #5: list/current/create/delete/switch) = 76
+  //  + 7 input tools (Plan #8: CDP Input mouse+keyboard+scroll, 2026-05-24)
+  //  + 1 interact (get_by_role gesture, 2026-05-24) = 84.
+  assert.equal(total, 84, `expected 84 total tool registrations, got ${total}`);
 });
 
-test('per-category counts match plan §3', () => {
+test('per-category counts match plan §3 + Plan #8', () => {
   const histo = buildHistogram();
   const expected: Record<ToolCategory, number> = {
     nav: 4,
     tabs: 4,
-    interact: 7,
+    interact: 8, // 7 original + 1 added 2026-05-24
     inspect: 7, // 6 + a11y_snapshot
+    input: 7, // CDP Input tools: Plan #8 (mouse+keyboard+scroll, 2026-05-24)
     network: 3, // list_network_requests + clear_network_requests + export_har (Plan #6, 2026-05-18)
     console: 2,
     performance: 3,
@@ -106,28 +109,26 @@ test('per-category counts match plan §3', () => {
 });
 
 // §7.2 expected-count matrix.
-test('§7.2 row 1: unset → all 76 tools', () => {
-  assert.equal(expectedEnabled(undefined), 76);
+test('§7.2 row 1: unset → all 84 tools', () => {
+  assert.equal(expectedEnabled(undefined), 84);
 });
 
-test("§7.2 row 2: 'all' → all 76 tools", () => {
-  assert.equal(expectedEnabled('all'), 76);
+test("§7.2 row 2: 'all' → all 84 tools", () => {
+  assert.equal(expectedEnabled('all'), 84);
 });
 
-test("§7.2 row 3: 'core' → 22 (nav+tabs+interact+inspect) + 3 lifecycle = 25", () => {
-  // Plan §3 says core = 22 tools. With lifecycle always on (+3), that's 25.
-  assert.equal(expectedEnabled('core'), 25);
+test("§7.2 row 3: 'core' → 23 (nav+tabs+interact+inspect) + 3 lifecycle = 26", () => {
+  // core = nav(4) + tabs(4) + interact(8) + inspect(7) = 23 + lifecycle(3) = 26.
+  assert.equal(expectedEnabled('core'), 26);
 });
 
-test("§7.2 row 4: 'nav,interact' → 4 + 7 + 3 lifecycle = 14", () => {
-  // Plan §7.2 said 11; that figure was estimated assuming lifecycle wasn't
-  // double-counted. With our 3-tool lifecycle (incl. new tool_categories) it's
-  // 4 + 7 + 3 = 14.
-  assert.equal(expectedEnabled('nav,interact'), 14);
+test("§7.2 row 4: 'nav,interact' → 4 + 8 + 3 lifecycle = 15", () => {
+  // nav(4) + interact(8) + lifecycle(3) = 15.
+  assert.equal(expectedEnabled('nav,interact'), 15);
 });
 
-test("§7.2 row 5: 'nav,interact,network,-network' → 4 + 7 + 3 lifecycle = 14", () => {
-  assert.equal(expectedEnabled('nav,interact,network,-network'), 14);
+test("§7.2 row 5: 'nav,interact,network,-network' → 4 + 8 + 3 lifecycle = 15", () => {
+  assert.equal(expectedEnabled('nav,interact,network,-network'), 15);
 });
 
 test("§7.2 row 6: 'nonsense' → lifecycle only (3)", () => {

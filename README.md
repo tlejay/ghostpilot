@@ -15,6 +15,7 @@ GhostPilot runs an MCP server inside the browser. Claude Code, Claude.ai or any 
 [![MCP tools](https://img.shields.io/badge/MCP%20tools-84-7c5cff)](#-tool-surface-84)
 [![macOS](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)](#build-a-dmg)
 [![GitHub stars](https://img.shields.io/github/stars/tlejay/ghostpilot?style=flat&color=fbbf24)](https://github.com/tlejay/ghostpilot/stargazers)
+[![CI](https://github.com/tlejay/ghostpilot/actions/workflows/ci.yml/badge.svg)](https://github.com/tlejay/ghostpilot/actions/workflows/ci.yml)
 
 [**Quick start**](#-quick-start) · [**See it in action**](#-see-it-in-action) · [**Tools**](#-tool-surface-84) · [**Connect from Claude.ai**](#connect-from-claudeai-web--iphone--ipad) · [**Configuration**](#configuration)
 

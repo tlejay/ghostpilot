@@ -8,7 +8,9 @@ published as a GitHub Release asset.
 ## Pre-flight
 
 - Working tree clean (`git status` shows no uncommitted changes)
-- All tests green:
+- **CI must be green** on the release commit before tagging. Check the
+  [CI badge](https://github.com/tlejay/ghostpilot/actions/workflows/ci.yml)
+  or run locally:
   ```bash
   pnpm typecheck
   pnpm test:unit
@@ -17,6 +19,8 @@ published as a GitHub Release asset.
 - `README.md` + `CHANGELOG.md` reflect the new version
 - `assets/notices.json` up to date if `dependencies` changed
   (`pnpm assets:licenses`)
+- `types/ghostpilot-tools.d.ts` in sync with `src/main/mcp/tools.ts`
+  (run `pnpm gen:types` if you added tools; requires a local build)
 
 ## Cut a release
 
